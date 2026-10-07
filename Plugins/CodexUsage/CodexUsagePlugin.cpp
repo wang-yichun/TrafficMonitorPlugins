@@ -391,13 +391,19 @@ namespace
         return true;
     }
 
+    unsigned long long TokenDelta(unsigned long long current, unsigned long long previous)
+    {
+        // A reset starts a new cumulative sequence within the same log.
+        return current >= previous ? current - previous : current;
+    }
+
     void ScanSessionFile(const std::filesystem::path& path, std::map<std::wstring, CodexSnapshot>& sessions,
-        size_t& unreadable)
+        size_t& unreadable, long long day_start, long long day_end)
     {
         std::ifstream file(path, std::ios::binary);
         if (!file) { ++unreadable; return; }
         std::string line;
-        CodexSnapshot latest;
+        CodexSnapshot previous, today;
         bool found_usage = false;
         while (std::getline(file, line))
         {
@@ -410,19 +416,27 @@ namespace
                 static_cast<int>(line.size()), wide.data(), count);
             JsonValue value;
             CodexSnapshot current;
-            if (ParseJson(wide, value) && AddTokenUsage(value, current) &&
-                (!found_usage || current.total_tokens >= latest.total_tokens))
+            if (!ParseJson(wide, value) || !AddTokenUsage(value, current)) continue;
+            const long long timestamp = CreditExpiry(value.Get(L"timestamp"));
+            if (timestamp >= day_start && timestamp < day_end)
             {
-                latest = current;
+                today.input_tokens += TokenDelta(current.input_tokens, previous.input_tokens);
+                today.cached_input_tokens += TokenDelta(current.cached_input_tokens, previous.cached_input_tokens);
+                today.output_tokens += TokenDelta(current.output_tokens, previous.output_tokens);
+                today.reasoning_tokens += TokenDelta(current.reasoning_tokens, previous.reasoning_tokens);
+                today.total_tokens += TokenDelta(current.total_tokens, previous.total_tokens);
                 found_usage = true;
             }
+            // Keep yesterday's cumulative value as the baseline for the first event today.
+            previous = current;
         }
+        if (file.bad()) ++unreadable;
         if (found_usage)
         {
             const std::wstring key = path.filename().wstring();
             const auto found = sessions.find(key);
-            if (found == sessions.end() || latest.total_tokens > found->second.total_tokens)
-                sessions[key] = latest;
+            if (found == sessions.end() || today.total_tokens > found->second.total_tokens)
+                sessions[key] = today;
         }
     }
 
@@ -432,25 +446,38 @@ namespace
         if (home.empty()) return;
         SYSTEMTIME local{};
         GetLocalTime(&local);
-        wchar_t date[32]{}, prefix[32]{};
-        swprintf_s(date, L"%04u\\%02u\\%02u", local.wYear, local.wMonth, local.wDay);
-        swprintf_s(prefix, L"rollout-%04u-%02u-%02uT", local.wYear, local.wMonth, local.wDay);
+        std::tm midnight{};
+        midnight.tm_year = local.wYear - 1900;
+        midnight.tm_mon = local.wMonth - 1;
+        midnight.tm_mday = local.wDay;
+        midnight.tm_isdst = -1;
+        const long long day_start = _mktime64(&midnight);
+        ++midnight.tm_mday;
+        midnight.tm_isdst = -1;
+        const long long day_end = _mktime64(&midnight);
         const std::filesystem::path root(home);
-        std::vector<std::filesystem::path> folders{
-            root / L"sessions" / date,
-            root / L"archived_sessions" / date,
-            root / L"archived_sessions"
-        };
         std::map<std::wstring, CodexSnapshot> sessions;
-        for (const auto& folder : folders)
+        for (const auto& folder : { root / L"sessions", root / L"archived_sessions" })
         {
             std::error_code error;
-            for (std::filesystem::directory_iterator it(folder, error), end; !error && it != end; it.increment(error))
+            for (std::filesystem::recursive_directory_iterator it(folder,
+                std::filesystem::directory_options::skip_permission_denied, error), end;
+                !error && it != end; it.increment(error))
             {
                 if (!it->is_regular_file(error) || it->path().extension() != L".jsonl") continue;
-                const std::wstring filename = it->path().filename().wstring();
-                if (filename.rfind(prefix, 0) != 0) continue;
-                ScanSessionFile(it->path(), sessions, snapshot.unreadable_sessions);
+                // Older chats may still be active today. Skip only logs not updated since midnight.
+                WIN32_FILE_ATTRIBUTE_DATA attributes{};
+                if (!GetFileAttributesExW(it->path().c_str(), GetFileExInfoStandard, &attributes))
+                {
+                    ++snapshot.unreadable_sessions;
+                    continue;
+                }
+                ULARGE_INTEGER written{};
+                written.LowPart = attributes.ftLastWriteTime.dwLowDateTime;
+                written.HighPart = attributes.ftLastWriteTime.dwHighDateTime;
+                const long long modified = static_cast<long long>(written.QuadPart / 10000000ULL) - 11644473600LL;
+                if (modified < day_start) continue;
+                ScanSessionFile(it->path(), sessions, snapshot.unreadable_sessions, day_start, day_end);
             }
         }
         for (const auto& entry : sessions)
@@ -469,6 +496,23 @@ namespace
         std::wstring digits = std::to_wstring(value);
         for (int i = static_cast<int>(digits.size()) - 3; i > 0; i -= 3) digits.insert(static_cast<size_t>(i), L",");
         return digits;
+    }
+
+    std::wstring FormatTotalCount(unsigned long long value, bool chinese)
+    {
+        std::wstring scaled;
+        if (value > 0 && value < 10000)
+            scaled = L"<0.0001";
+        else
+        {
+            std::wostringstream out;
+            out << std::fixed << std::setprecision(4) << (value / 100000000.0);
+            scaled = out.str();
+            while (!scaled.empty() && scaled.back() == L'0') scaled.pop_back();
+            if (!scaled.empty() && scaled.back() == L'.') scaled.pop_back();
+        }
+        return FormatCount(value) + (chinese ? L"（" : L" (") + scaled
+            + (chinese ? L" 亿）" : L" x 100M)");
     }
 
     std::wstring Countdown(long long reset)
@@ -530,7 +574,7 @@ namespace
         row(cn ? L"缓存输入（包含于输入）" : L"Cached input (included)", FormatCount(snapshot.cached_input_tokens));
         row(cn ? L"输出" : L"Output", FormatCount(snapshot.output_tokens));
         row(cn ? L"推理输出（包含于输出）" : L"Reasoning output (included)", FormatCount(snapshot.reasoning_tokens));
-        row(cn ? L"合计" : L"Total", FormatCount(snapshot.total_tokens));
+        row(cn ? L"合计" : L"Total", FormatTotalCount(snapshot.total_tokens, cn));
         row(cn ? L"会话 / 不可读日志" : L"Sessions / unreadable", std::to_wstring(snapshot.session_count) + L" / " + std::to_wstring(snapshot.unreadable_sessions));
         g_popup_lines.push_back(cn ? L"账号" : L"Account");
         row(cn ? L"连接状态" : L"Connection", snapshot.status);
@@ -1025,7 +1069,7 @@ void CCodexUsagePlugin::RefreshSnapshot()
             << L"缓存输入: " << FormatCount(next.cached_input_tokens) << L"\r\n"
             << L"输出: " << FormatCount(next.output_tokens) << L"\r\n"
             << L"推理: " << FormatCount(next.reasoning_tokens) << L"\r\n"
-            << L"总计: " << FormatCount(next.total_tokens) << L"\r\n"
+            << L"总计: " << FormatTotalCount(next.total_tokens, true) << L"\r\n"
             << L"会话数: " << next.session_count << L"\r\n"
             << L"无法读取的日志: " << next.unreadable_sessions << L"\r\n"
             << L"状态: " << next.status;
@@ -1035,7 +1079,7 @@ void CCodexUsagePlugin::RefreshSnapshot()
             << L"Cached input: " << FormatCount(next.cached_input_tokens) << L"\r\n"
             << L"Output: " << FormatCount(next.output_tokens) << L"\r\n"
             << L"Reasoning: " << FormatCount(next.reasoning_tokens) << L"\r\n"
-            << L"Total: " << FormatCount(next.total_tokens) << L"\r\n"
+            << L"Total: " << FormatTotalCount(next.total_tokens, false) << L"\r\n"
             << L"Sessions: " << next.session_count << L"\r\n"
             << L"Unreadable logs: " << next.unreadable_sessions << L"\r\n"
             << L"Status: " << next.status;
