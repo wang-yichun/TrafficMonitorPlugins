@@ -6,6 +6,8 @@ This plugin ports the Codex portion of Codex Usage Monitor into TrafficMonitor. 
 
 This directory is the sole source for the Codex plugin. The TrafficMonitor host repository loads the DLL and does not contain or build a source copy of this plugin.
 
+For installing both repositories on another Windows PC, follow the host repository's [Codex installation guide](https://github.com/wang-yichun/TrafficMonitor/blob/codex/codex-usage-plugin/INSTALL-CODEX.md). Its `InstallFromRepos.ps1` builds and installs this plugin automatically.
+
 Build `CodexUsage` and `PluginTester` as the same platform and configuration from `TrafficMonitorPlugins.sln`. Both outputs go to `bin/<Platform>/<Configuration>/`, so `PluginTester.exe` discovers `CodexUsage.dll` from its current directory. Start the tester, choose **Codex quota**, then inspect the preview, dark background, two-row layout, tooltip, and click popup.
 
 The tester checks drawing and basic plugin events. Also build the matching TrafficMonitor host from the adjacent `TrafficMonitor` source checkout and copy the DLL into its `plugins` directory for taskbar validation. This plugin uses API 9's `OnShutdown` callback to stop its polling thread; an older host/tester that does not call this callback is not a safe runtime target.
