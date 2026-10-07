@@ -5,6 +5,8 @@
 **********************************************************/
 #pragma once
 
+class IPluginDrawer;
+
 //插件显示项目的接口
 class IPluginItem
 {
@@ -149,6 +151,10 @@ public:
      * @return float 资源占用图的值，范围为0.0~1.0。
      */
     virtual float GetResourceUsageGraphValue() const { return 0.0; }
+
+    // API 8: custom drawing through the host renderer and exclusive two-row taskbar layout.
+    virtual bool DrawItemEx(IPluginDrawer* pDrawer, int x, int y, int w, int h, bool dark_mode) { return false; }
+    virtual int IsDoubleLineExclusive() const { return 0; }
 };
 
 class ITrafficMonitor;
@@ -163,7 +169,7 @@ public:
      * @attention 插件开发者不应该修改这里的返回值，也不应该重写此虚函数。
      * @return  int
      */
-    virtual int GetAPIVersion() const { return 7; }
+    virtual int GetAPIVersion() const { return 9; }
 
     /**
      * @brief   获取插件显示项目的对象
@@ -321,6 +327,9 @@ public:
      * @param   pApp
      */
     virtual void OnInitialize(ITrafficMonitor* pApp) {}
+
+    // API 9: stop plugin-owned worker threads before unloading the DLL.
+    virtual void OnShutdown() {}
 };
 
 
@@ -442,5 +451,9 @@ public:
 *     6       | 新增 IPluginItem::GetResourceUsageGraphType IPluginItem::GetResourceUsageGraphValue 函数
 * -------------------------------------------------------------------------
 *     7       | 新增 ITMPlugin::OnInitialize 函数
+* -------------------------------------------------------------------------
+*     8       | 新增 IPluginItem::DrawItemEx, IPluginItem::IsDoubleLineExclusive 函数
+* -------------------------------------------------------------------------
+*     9       | 新增 ITMPlugin::OnShutdown 函数
 * -------------------------------------------------------------------------
 */

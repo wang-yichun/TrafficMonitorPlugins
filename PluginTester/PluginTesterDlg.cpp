@@ -636,6 +636,13 @@ void CPluginTesterDlg::OnBnClickedBrowseButton()
 
 void CPluginTesterDlg::OnDestroy()
 {
+	// Stop API 9 plugins before their DLL code is unloaded or the tester exits.
+	for (const auto& plugin_info : m_plugins)
+	{
+		if (plugin_info.plugin != nullptr && plugin_info.plugin->GetAPIVersion() >= 9)
+			plugin_info.plugin->OnShutdown();
+	}
+
     CDialog::OnDestroy();
 
     SaveConfig();
