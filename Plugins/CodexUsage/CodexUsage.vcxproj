@@ -68,6 +68,7 @@
     <ClInclude Include="WorkdayCalendar.h" />
   </ItemGroup>
   <ItemGroup><ClCompile Include="CodexUsagePlugin.cpp" /></ItemGroup>
+  <ItemGroup><ResourceCompile Include="CodexUsage.rc" /><ClInclude Include="OptionsResource.h" /></ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ItemGroup><CalendarFile Include="calendar\*.txt" /></ItemGroup>
   <Target Name="CopyWorkdayCalendar" AfterTargets="Build">

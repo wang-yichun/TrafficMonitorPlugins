@@ -1,0 +1,15 @@
+#pragma once
+#define IDD_CODEX_OPTIONS 101
+#define IDC_POLL 1001
+#define IDC_THEME 1002
+#define IDC_BAR 1003
+#define IDC_TEXT 1004
+#define IDC_SESSION 1005
+#define IDC_WEEKLY 1006
+#define IDC_CARDS 1007
+#define IDC_TIME_BAR 1008
+#define IDC_POLL_LABEL 1009
+#define IDC_THEME_LABEL 1010
+#define IDC_BAR_LABEL 1011
+#define IDC_TEXT_LABEL 1012
+#define IDC_HINT 1013

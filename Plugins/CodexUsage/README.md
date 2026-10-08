@@ -14,7 +14,9 @@ The tester checks drawing and basic plugin events. Also build the matching Traff
 
 For the adjacent host checkout, install `bin/x64/Release/CodexUsage.dll` to `../TrafficMonitor/Bin/x64/Release/plugins/CodexUsage.dll`. The host's `RestartTrafficMonitor.cmd` also installs this independent build after gracefully closing the running host. Build the plugin again before restarting to apply source changes.
 
-Click the item to open the detail popup, or right-click it for the details and manual-refresh commands. The host tooltip contains a short quota summary; account and token details stay in the plugin popup. This first port covers Codex; Claude Code, Antigravity, and the standalone app's settings/alerts are not included.
+Click the item to open the detail popup, or right-click it for the details and manual-refresh commands. The host tooltip contains a short quota summary; account and token details stay in the plugin popup. This first port covers Codex; Claude Code, Antigravity, and quota notifications are not included.
+
+Quota cells use the same remaining-quota thresholds and light/dark palette as codex-usage-monitor: above 50% is green, above 20% through 50% is amber, and 20% or less is red.
 
 ## Data and privacy
 
@@ -53,3 +55,27 @@ The plugin currently displays Codex data only. It includes the custom detail pan
 The quota display has ten narrow vertical cells per row. Each cell represents 10%; partial quota fills the cell from the bottom. A thin gray line below each row shows its remaining time ratio. Reset cards show expiry days, switching to hours or minutes near expiry.
 
 Click the item to open or close the grouped detail panel. The panel also closes with its close button, Escape, or when the pointer leaves the popup and its opening position. Account, quota and local token data refresh after a 60-second wait following each refresh; visible countdowns update every second. Manual refresh is available in the plugin commands.
+
+## Plugin options
+
+Open TrafficMonitor's plugin manager, select Codex Usage, and choose plugin options.
+The dialog follows the host's Chinese or English language and supports:
+
+- Refresh after 1, 5, or 15 minutes, or 1 hour (default: 1 minute).
+- Follow the host theme, or use light/dark quota text and bar colors.
+- Segmented or continuous quota bars; compact or detailed quota text.
+- Show the 5-hour and/or 7-day quota (at least one must remain visible).
+- Show reset cards and the time bar independently.
+
+Defaults preserve the existing display. Settings apply on OK and persist in
+`CodexUsage.ini` in TrafficMonitor's plugin configuration directory. Cancel leaves
+settings unchanged. A save failure keeps the dialog open and reports the error.
+Position/background remain host settings. These display switches affect the host
+item; the detail popup retains complete account, quota and token information.
+Changing settings requests an immediate refresh. Poll intervals are waits after
+each refresh, as in the existing plugin.
+
+UI/config regression test: compile `tests/OptionsDialogTests.cpp` in an x64 Visual
+Studio developer prompt with `/std:c++17 /EHsc /UNDEBUG` and link `user32.lib gdi32.lib`.
+Run with the built `CodexUsage.dll` path. It uses a temporary config directory and
+checks cancel, apply, unchanged OK, reload, and single-row continuous drawing.

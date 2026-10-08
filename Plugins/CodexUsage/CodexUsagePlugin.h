@@ -10,6 +10,18 @@
 #include <thread>
 #include <vector>
 
+struct CodexOptions
+{
+    int poll_seconds{60};
+    int theme{}; // Host, light, dark
+    int bar_style{}; // Segmented, continuous
+    int text_style{}; // Compact, detailed
+    bool show_session{true};
+    bool show_weekly{true};
+    bool show_cards{true};
+    bool show_time_bar{true};
+};
+
 struct CodexSnapshot
 {
     bool has_session{};
@@ -64,6 +76,9 @@ public:
     const wchar_t* GetCommandName(int command_index) override;
     void OnPluginCommand(int command_index, void* hWnd, void* para) override;
 
+    OptionReturn ShowOptionsDialog(void* hParent) override;
+    CodexOptions Options() const;
+    bool SaveOptions(const CodexOptions& options);
     CodexSnapshot Snapshot() const;
     void RequestRefresh();
     bool IsChinese() const { return m_is_chinese; }
@@ -73,6 +88,9 @@ private:
     void PollLoop();
     void RefreshSnapshot();
 
+    mutable std::mutex m_options_mutex;
+    CodexOptions m_options;
+    std::wstring m_config_path;
     CCodexUsageItem m_item;
     ITrafficMonitor* m_app{};
     bool m_is_chinese{ true };

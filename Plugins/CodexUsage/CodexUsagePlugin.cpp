@@ -4,6 +4,7 @@
 #include "CodexUsagePlugin.h"
 #include "JsonValue.h"
 #include "TimeBarMarkers.h"
+#include "OptionsResource.h"
 
 #include <algorithm>
 #include <ctime>
@@ -24,7 +25,6 @@ namespace
     constexpr wchar_t kUsageHost[] = L"chatgpt.com";
     constexpr wchar_t kUsagePath[] = L"/backend-api/wham/usage";
     constexpr wchar_t kCreditsPath[] = L"/backend-api/wham/rate-limit-reset-credits";
-    constexpr int kPollSeconds = 60;
     constexpr DWORD kHttpTimeoutMs = 5000;
     constexpr wchar_t kDetailPopupClass[] = L"TrafficMonitorCodexUsageDetails";
 
@@ -551,6 +551,11 @@ namespace
         const bool available = weekly ? snapshot.has_weekly : snapshot.has_session;
         if (!available) return L"--";
         const double remaining = std::clamp(100.0 - (weekly ? snapshot.weekly_used : snapshot.session_used), 0.0, 100.0);
+        if (CCodexUsagePlugin::Instance().Options().text_style == 1)
+            return std::wstring(CCodexUsagePlugin::Instance().IsChinese() ? L"剩余 " : L"Remaining ")
+                + std::to_wstring(static_cast<int>(std::lround(remaining))) + L"% · "
+                + (CCodexUsagePlugin::Instance().IsChinese() ? L"重置 " : L"Resets ")
+                + Countdown(weekly ? snapshot.weekly_reset : snapshot.session_reset);
         return std::wstring(CCodexUsagePlugin::Instance().IsChinese() ? L"余" : L"")
             + std::to_wstring(static_cast<int>(std::lround(remaining))) + L"% · "
             + Countdown(weekly ? snapshot.weekly_reset : snapshot.session_reset);
@@ -854,6 +859,8 @@ namespace
 
     void DrawRow(HDC dc, const CodexSnapshot& snapshot, bool weekly, int x, int y, int w, int h, bool dark)
     {
+        const auto options = CCodexUsagePlugin::Instance().Options();
+        if (options.theme != 0) dark = options.theme == 2;
         const bool available = weekly ? snapshot.has_weekly : snapshot.has_session;
         const double used = weekly ? snapshot.weekly_used : snapshot.session_used;
         const long long reset = weekly ? snapshot.weekly_reset : snapshot.session_reset;
@@ -862,7 +869,13 @@ namespace
         const int left = x + sc(2);
         const int row_height = h;
         const COLORREF foreground = dark ? RGB(235, 238, 242) : RGB(45, 49, 54);
-        const COLORREF filled = dark ? RGB(39, 167, 78) : RGB(25, 132, 58);
+        const double remaining = available ? std::clamp(100.0 - used, 0.0, 100.0) : 0.0;
+        // Match codex-usage-monitor: inclusive 20% red and 50% amber limits.
+        const COLORREF filled = remaining <= 20.0
+            ? (dark ? RGB(242, 139, 130) : RGB(197, 34, 31))
+            : remaining <= 50.0
+                ? (dark ? RGB(253, 214, 99) : RGB(227, 116, 0))
+                : (dark ? RGB(129, 201, 149) : RGB(24, 128, 56));
         const COLORREF empty = dark ? RGB(82, 91, 101) : RGB(194, 202, 211);
         SIZE short_label{}, long_label{};
         GetTextExtentPoint32W(dc, L"5h", 2, &short_label);
@@ -873,10 +886,9 @@ namespace
 
         const int bar_x = label.right + sc(8);
         const int bar_width = sc(89); // Ten narrow 8px cells with nine 1px gaps.
-        const int gap = sc(1);
-        const int segments = 10;
+        const int gap = options.bar_style == 0 ? sc(1) : 0;
+        const int segments = options.bar_style == 0 ? 10 : 1;
         const int segment_width = (bar_width - (segments - 1) * gap) / segments;
-        const double remaining = available ? std::clamp(100.0 - used, 0.0, 100.0) : 0.0;
         const double filled_segments = remaining * segments / 100.0;
         const int time_gap = 1;
         const int time_height = (std::max)(1, sc(2));
@@ -891,19 +903,21 @@ namespace
             HBRUSH brush = CreateSolidBrush(empty);
             FillRect(dc, &bar, brush);
             DeleteObject(brush);
-            // Each cell represents 10%. As quota is used, its green fill recedes from top to bottom.
+            // Each cell represents 10%. As quota is used, its colored fill recedes from top to bottom.
             const double covered = available ? std::clamp(filled_segments - i, 0.0, 1.0) : 0.0;
             const int fill_height = static_cast<int>(std::lround(bar_height * covered));
             if (fill_height > 0)
             {
-                RECT fill{ bar.left, bar.bottom - fill_height, bar.right, bar.bottom };
+                RECT fill = options.bar_style == 0
+                    ? RECT{ bar.left, bar.bottom - fill_height, bar.right, bar.bottom }
+                    : RECT{ bar.left, bar.top, bar.left + static_cast<int>(std::lround(segment_width * covered)), bar.bottom };
                 brush = CreateSolidBrush(filled);
                 FillRect(dc, &fill, brush);
                 DeleteObject(brush);
             }
         }
         const int drawn_width = segments * (segment_width + gap) - gap;
-        if (available && reset > 0)
+        if (options.show_time_bar && available && reset > 0)
         {
             const double duration = weekly ? 7.0 * 86400 : 5.0 * 3600;
             const long long now = static_cast<long long>(time(nullptr));
@@ -929,14 +943,15 @@ namespace
         SIZE size{}; GetTextExtentPoint32W(dc, summary.c_str(), static_cast<int>(summary.size()), &size);
         RECT summary_rect{ value_x, y, value_x + size.cx + sc(1), y + row_height };
         DrawText(dc, summary_rect, summary, foreground);
-        const std::wstring other_summary = QuotaSummary(snapshot, !weekly);
+        const std::wstring other_summary = options.show_session && options.show_weekly ? QuotaSummary(snapshot, !weekly) : summary;
         SIZE other_size{}; GetTextExtentPoint32W(dc, other_summary.c_str(), static_cast<int>(other_summary.size()), &other_size);
         const int badge_x = value_x + (std::max)(size.cx, other_size.cx) + sc(6);
-        const int count = (std::min)(8, (std::max)(0, snapshot.reset_credits));
-        for (int i = weekly ? 1 : 0; i < count; i += 2)
+        const int count = options.show_cards ? (std::min)(8, (std::max)(0, snapshot.reset_credits)) : 0;
+        const bool double_row = options.show_session && options.show_weekly;
+        for (int i = double_row && weekly ? 1 : 0; i < count; i += double_row ? 2 : 1)
         {
             const int card_size = (std::max)(10, (std::min)(sc(14), row_height - sc(3)));
-            const int bx = badge_x + (i / 2) * (card_size + sc(2));
+            const int bx = badge_x + (double_row ? i / 2 : i) * (card_size + sc(2));
             if (bx + card_size > x + w) break;
             RECT badge{ bx, y + (row_height - card_size) / 2, bx + card_size, y + (row_height - card_size) / 2 + card_size };
             const long long expiry = static_cast<size_t>(i) < snapshot.reset_credit_expiries.size() ? snapshot.reset_credit_expiries[i] : 0;
@@ -1026,6 +1041,24 @@ void CCodexUsagePlugin::OnInitialize(ITrafficMonitor* app)
         // Automatic host language is neutral (0); use Windows' UI language in that case.
         m_is_chinese = PRIMARYLANGID(language == 0 ? GetUserDefaultUILanguage() : language) == LANG_CHINESE;
     }
+    if (app && app->GetPluginConfigDir())
+    {
+        m_config_path = (std::filesystem::path(app->GetPluginConfigDir()) / L"CodexUsage.ini").wstring();
+        auto read = [&](const wchar_t* key, int fallback) { return static_cast<int>(GetPrivateProfileIntW(L"Options", key, fallback, m_config_path.c_str())); };
+        CodexOptions options;
+        options.poll_seconds = read(L"PollSeconds", 60);
+        if (options.poll_seconds != 60 && options.poll_seconds != 300 && options.poll_seconds != 900 && options.poll_seconds != 3600) options.poll_seconds = 60;
+        options.theme = (std::clamp)(read(L"Theme", 0), 0, 2);
+        options.bar_style = (std::clamp)(read(L"BarStyle", 0), 0, 1);
+        options.text_style = (std::clamp)(read(L"TextStyle", 0), 0, 1);
+        options.show_session = read(L"ShowSession", 1) != 0;
+        options.show_weekly = read(L"ShowWeekly", 1) != 0;
+        options.show_cards = read(L"ShowCards", 1) != 0;
+        options.show_time_bar = read(L"ShowTimeBar", 1) != 0;
+        if (!options.show_session && !options.show_weekly) options.show_session = true;
+        std::lock_guard<std::mutex> lock(m_options_mutex);
+        m_options = options;
+    }
     m_stop.store(false);
     m_refresh_requested.store(false);
     if (!m_worker.joinable()) m_worker = std::thread(&CCodexUsagePlugin::PollLoop, this);
@@ -1046,7 +1079,7 @@ void CCodexUsagePlugin::PollLoop()
     {
         RefreshSnapshot();
         std::unique_lock<std::mutex> lock(m_worker_mutex);
-        m_worker_cv.wait_for(lock, std::chrono::seconds(kPollSeconds), [this] {
+        m_worker_cv.wait_for(lock, std::chrono::seconds(Options().poll_seconds), [this] {
             return m_stop.load() || m_refresh_requested.exchange(false);
         });
         if (m_stop.load()) break;
@@ -1161,13 +1194,14 @@ const wchar_t* CCodexUsagePlugin::GetTooltipInfo()
     thread_local std::wstring result;
     std::lock_guard<std::mutex> lock(m_snapshot_mutex);
     result = m_snapshot.status;
-    if (m_snapshot.has_session)
+    const auto options = Options();
+    if (options.show_session && m_snapshot.has_session)
     {
         result += m_is_chinese ? L" | 5小时余量 " : L" | 5h remaining ";
         result += std::to_wstring(static_cast<int>(std::lround((std::clamp)(100.0 - m_snapshot.session_used, 0.0, 100.0))));
         result += L"%";
     }
-    if (m_snapshot.has_weekly)
+    if (options.show_weekly && m_snapshot.has_weekly)
     {
         result += m_is_chinese ? L" | 7天余量 " : L" | 7d remaining ";
         result += std::to_wstring(static_cast<int>(std::lround((std::clamp)(100.0 - m_snapshot.weekly_used, 0.0, 100.0))));
@@ -1209,6 +1243,135 @@ void CCodexUsagePlugin::RequestRefresh()
     m_worker_cv.notify_all();
 }
 
+
+CodexOptions CCodexUsagePlugin::Options() const
+{
+    std::lock_guard<std::mutex> lock(m_options_mutex);
+    return m_options;
+}
+
+namespace
+{
+    std::wstring OptionsSection(const CodexOptions& options)
+    {
+        std::wstring section;
+        const auto add = [&](const wchar_t* key, int value) {
+            section += std::wstring(key) + L"=" + std::to_wstring(value);
+            section.push_back(L'\0');
+        };
+        add(L"PollSeconds", options.poll_seconds);
+        add(L"Theme", options.theme);
+        add(L"BarStyle", options.bar_style);
+        add(L"TextStyle", options.text_style);
+        add(L"ShowSession", options.show_session);
+        add(L"ShowWeekly", options.show_weekly);
+        add(L"ShowCards", options.show_cards);
+        add(L"ShowTimeBar", options.show_time_bar);
+        section.push_back(L'\0');
+        return section;
+    }
+
+    INT_PTR CALLBACK OptionsDialogProc(HWND dialog, UINT message, WPARAM wp, LPARAM)
+    {
+        const bool chinese = CCodexUsagePlugin::Instance().IsChinese();
+        if (message == WM_INITDIALOG)
+        {
+            const auto options = CCodexUsagePlugin::Instance().Options();
+            const auto combo = [&](int id, std::initializer_list<const wchar_t*> labels, int selected) {
+                for (const auto label : labels) SendDlgItemMessageW(dialog, id, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(label));
+                SendDlgItemMessageW(dialog, id, CB_SETCURSEL, selected, 0);
+            };
+            combo(IDC_POLL, chinese ? std::initializer_list<const wchar_t*>{L"1 分钟", L"5 分钟", L"15 分钟", L"1 小时"}
+                : std::initializer_list<const wchar_t*>{L"1 minute", L"5 minutes", L"15 minutes", L"1 hour"},
+                options.poll_seconds == 300 ? 1 : options.poll_seconds == 900 ? 2 : options.poll_seconds == 3600 ? 3 : 0);
+            combo(IDC_THEME, chinese ? std::initializer_list<const wchar_t*>{L"跟随 TrafficMonitor", L"浅色", L"深色"}
+                : std::initializer_list<const wchar_t*>{L"Follow TrafficMonitor", L"Light", L"Dark"}, options.theme);
+            combo(IDC_BAR, chinese ? std::initializer_list<const wchar_t*>{L"分段", L"连续"}
+                : std::initializer_list<const wchar_t*>{L"Segmented", L"Continuous"}, options.bar_style);
+            combo(IDC_TEXT, chinese ? std::initializer_list<const wchar_t*>{L"简洁", L"详细"}
+                : std::initializer_list<const wchar_t*>{L"Compact", L"Detailed"}, options.text_style);
+            CheckDlgButton(dialog, IDC_SESSION, options.show_session ? BST_CHECKED : BST_UNCHECKED);
+            CheckDlgButton(dialog, IDC_WEEKLY, options.show_weekly ? BST_CHECKED : BST_UNCHECKED);
+            CheckDlgButton(dialog, IDC_CARDS, options.show_cards ? BST_CHECKED : BST_UNCHECKED);
+            CheckDlgButton(dialog, IDC_TIME_BAR, options.show_time_bar ? BST_CHECKED : BST_UNCHECKED);
+            if (chinese)
+            {
+                SetWindowTextW(dialog, L"Codex Usage 插件选项");
+                const std::pair<int, const wchar_t*> labels[] = {
+                    {IDC_POLL_LABEL, L"刷新频率"}, {IDC_THEME_LABEL, L"主题"}, {IDC_BAR_LABEL, L"额度进度条"},
+                    {IDC_TEXT_LABEL, L"文字样式"}, {IDC_SESSION, L"显示 5 小时额度"}, {IDC_WEEKLY, L"显示 7 天额度"},
+                    {IDC_CARDS, L"显示重置卡片"}, {IDC_TIME_BAR, L"显示时间进度条"},
+                    {IDC_HINT, L"窗口位置和背景由 TrafficMonitor 控制。至少保留一个额度窗口。"},
+                    {IDOK, L"确定"}, {IDCANCEL, L"取消"}
+                };
+                for (const auto& label : labels) SetDlgItemTextW(dialog, label.first, label.second);
+            }
+            RECT bounds{}, owner{};
+            GetWindowRect(dialog, &bounds);
+            GetWindowRect(GetParent(dialog) ? GetParent(dialog) : GetDesktopWindow(), &owner);
+            SetWindowPos(dialog, nullptr, owner.left + (owner.right - owner.left - bounds.right + bounds.left) / 2,
+                owner.top + (owner.bottom - owner.top - bounds.bottom + bounds.top) / 2, 0, 0, SWP_NOSIZE | SWP_NOZORDER);
+            return TRUE;
+        }
+        if (message == WM_COMMAND)
+        {
+            if (LOWORD(wp) == IDCANCEL) { EndDialog(dialog, IDCANCEL); return TRUE; }
+            if (LOWORD(wp) == IDOK)
+            {
+                auto options = CCodexUsagePlugin::Instance().Options();
+                const int intervals[] = {60, 300, 900, 3600};
+                options.poll_seconds = intervals[(std::clamp)(static_cast<int>(SendDlgItemMessageW(dialog, IDC_POLL, CB_GETCURSEL, 0, 0)), 0, 3)];
+                options.theme = static_cast<int>(SendDlgItemMessageW(dialog, IDC_THEME, CB_GETCURSEL, 0, 0));
+                options.bar_style = static_cast<int>(SendDlgItemMessageW(dialog, IDC_BAR, CB_GETCURSEL, 0, 0));
+                options.text_style = static_cast<int>(SendDlgItemMessageW(dialog, IDC_TEXT, CB_GETCURSEL, 0, 0));
+                options.show_session = IsDlgButtonChecked(dialog, IDC_SESSION) == BST_CHECKED;
+                options.show_weekly = IsDlgButtonChecked(dialog, IDC_WEEKLY) == BST_CHECKED;
+                options.show_cards = IsDlgButtonChecked(dialog, IDC_CARDS) == BST_CHECKED;
+                options.show_time_bar = IsDlgButtonChecked(dialog, IDC_TIME_BAR) == BST_CHECKED;
+                if (!options.show_session && !options.show_weekly)
+                {
+                    MessageBoxW(dialog, chinese ? L"请至少选择一个额度窗口。" : L"Select at least one quota window.", L"Codex Usage", MB_OK | MB_ICONINFORMATION);
+                    return TRUE;
+                }
+                if (OptionsSection(options) == OptionsSection(CCodexUsagePlugin::Instance().Options()))
+                    EndDialog(dialog, IDCANCEL);
+                else if (CCodexUsagePlugin::Instance().SaveOptions(options)) EndDialog(dialog, IDOK);
+                else MessageBoxW(dialog, chinese ? L"无法保存配置，请检查配置目录是否可写。" : L"Unable to save settings. Check the configuration directory is writable.", L"Codex Usage", MB_OK | MB_ICONERROR);
+                return TRUE;
+            }
+        }
+        if (message == WM_CLOSE) { EndDialog(dialog, IDCANCEL); return TRUE; }
+        return FALSE;
+    }
+}
+
+bool CCodexUsagePlugin::SaveOptions(const CodexOptions& options)
+{
+    if (m_config_path.empty()) return false;
+    std::error_code error;
+    std::filesystem::create_directories(std::filesystem::path(m_config_path).parent_path(), error);
+    if (error) return false;
+    const auto section = OptionsSection(options);
+    if (!WritePrivateProfileSectionW(L"Options", section.c_str(), m_config_path.c_str())) return false;
+    {
+        std::lock_guard<std::mutex> lock(m_options_mutex);
+        m_options = options;
+    }
+    DestroyDetailPopup();
+    RequestRefresh();
+    return true;
+}
+
+ITMPlugin::OptionReturn CCodexUsagePlugin::ShowOptionsDialog(void* hParent)
+{
+    HMODULE module{};
+    GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+        reinterpret_cast<LPCWSTR>(&TMPluginGetInstance), &module);
+    const auto result = DialogBoxParamW(module, MAKEINTRESOURCEW(IDD_CODEX_OPTIONS), static_cast<HWND>(hParent), OptionsDialogProc, 0);
+    if (result == -1) MessageBoxW(static_cast<HWND>(hParent), IsChinese() ? L"无法打开插件选项。" : L"Unable to open plugin options.", L"Codex Usage", MB_OK | MB_ICONERROR);
+    return result == IDOK ? OR_OPTION_CHANGED : OR_OPTION_UNCHANGED;
+}
+
 CodexSnapshot CCodexUsagePlugin::Snapshot() const
 {
     std::lock_guard<std::mutex> lock(m_snapshot_mutex);
@@ -1228,14 +1391,17 @@ int CCodexUsageItem::GetItemWidthEx(void* hDC) const
     TEXTMETRICW metrics{}; GetTextMetricsW(dc, &metrics);
     const auto sc = [&](int n) { return MulDiv(n, (std::max)(16L, metrics.tmHeight), 16); };
     const auto snapshot = CCodexUsagePlugin::Instance().Snapshot();
+    const auto options = CCodexUsagePlugin::Instance().Options();
     int summary_width = 0;
     for (bool weekly : { false, true })
     {
+        if (weekly ? !options.show_weekly : !options.show_session) continue;
         const auto text = QuotaSummary(snapshot, weekly);
         SIZE size{}; GetTextExtentPoint32W(dc, text.c_str(), static_cast<int>(text.size()), &size);
         summary_width = (std::max)(summary_width, static_cast<int>(size.cx));
     }
-    const int columns = ((std::min)(8, (std::max)(0, snapshot.reset_credits)) + 1) / 2;
+    const int cards = options.show_cards ? (std::min)(8, (std::max)(0, snapshot.reset_credits)) : 0;
+    const int columns = options.show_session && options.show_weekly ? (cards + 1) / 2 : cards;
     SIZE short_label{}, long_label{};
     GetTextExtentPoint32W(dc, L"5h", 2, &short_label);
     GetTextExtentPoint32W(dc, L"7d", 2, &long_label);
@@ -1246,10 +1412,12 @@ void CCodexUsageItem::DrawItem(void* hDC, int x, int y, int w, int h, bool dark_
 {
     if (hDC == nullptr) return;
     const CodexSnapshot snapshot = CCodexUsagePlugin::Instance().Snapshot();
-    const int row_height = h / 2;
+    const auto options = CCodexUsagePlugin::Instance().Options();
+    const int row_height = options.show_session && options.show_weekly ? h / 2 : h;
     HDC dc = static_cast<HDC>(hDC);
-    DrawRow(dc, snapshot, false, x, y, w, row_height, dark_mode);
-    DrawRow(dc, snapshot, true, x, y + row_height, w, h - row_height, dark_mode);
+    if (options.show_session) DrawRow(dc, snapshot, false, x, y, w, row_height, dark_mode);
+    if (options.show_weekly) DrawRow(dc, snapshot, true, x, y + (options.show_session ? row_height : 0), w,
+        options.show_session ? h - row_height : h, dark_mode);
 }
 
 int CCodexUsageItem::OnMouseEvent(MouseEventType type, int, int, void* hWnd, int)
