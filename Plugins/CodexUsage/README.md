@@ -24,6 +24,28 @@ For today's local token totals, it scans active and archived Codex session JSONL
 
 The total also shows a conversion to units of 100 million tokens (亿 in Chinese), alongside the full token count.
 
+## Configurable workdays and holidays
+
+The time bar uses Beijing civil dates. Five-hour markers for 09:30, 12:00, 13:30 and 18:30 appear only on working days. Weekly markers separate continuous working-day and rest-day periods, including official holidays and make-up workdays.
+
+The time bar keeps its original gray for working periods and uses a muted gray for rest periods, with enough contrast against the host background. On the weekly bar, all hours of a workday count as working periods. On the five-hour bar, only 09:30–12:00 and 13:30–18:30 on workdays count as working periods; lunch, evenings and holidays use the rest color.
+
+Edit `calendar/YYYY.txt` beside the installed `CodexUsage.dll` (usually `plugins/calendar/2026.txt`). Each UTF-8 file belongs to the year in its filename. Lines use these formats; range endpoints are inclusive:
+
+```text
+# Comments begin with #. A UTF-8 BOM is accepted.
+holiday 2026-10-01 2026-10-07
+workday 2026-10-10
+```
+
+Make-up workdays override holidays, then unlisted dates fall back to Monday-Friday. Missing years also use Monday-Friday; they do not inherit another year's holiday schedule. Invalid lines, dates or ranges spanning different years are ignored. Split a cross-year range across the two annual files.
+
+The bundled 2026 table follows the [State Council's official 2026 notice](https://www.beijing.gov.cn/zhengce/zhengcefagui/202511/t20251104_4258873.html). No predicted 2027 table is bundled. When the official schedule is published, add `2027.txt` in the same format; no recompilation is required. Calendar edits reload with the next data refresh (normally after a 60-second wait); use the plugin's manual refresh command to reload sooner.
+
+Building the plugin copies the source `calendar/*.txt` files alongside its output DLL. Install both the DLL and calendar folder. The host installation/restart scripts add missing annual files and preserve existing calendar files, so edit the installed file or deliberately replace it when updating a year's schedule.
+
+To run the calendar regression checks, open an x64 Visual Studio developer terminal in `Plugins/CodexUsage`, compile `tests/WorkdayCalendarTests.cpp` with `cl /std:c++17 /EHsc /UNDEBUG`, and run the generated `WorkdayCalendarTests.exe` from that same directory. It checks all bundled holiday/make-up dates, workday precedence, malformed input, missing-year fallback and time-bar marker placement.
+
 The plugin currently displays Codex data only. It includes the custom detail panel, but its labels currently support Chinese and English rather than all languages offered by the standalone monitor.
 
 ## Display and refresh

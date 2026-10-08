@@ -1,6 +1,7 @@
 #pragma once
 
 #include "PluginInterface.h"
+#include "WorkdayCalendar.h"
 
 #include <atomic>
 #include <condition_variable>
@@ -29,6 +30,7 @@ struct CodexSnapshot
     unsigned long long total_tokens{};
     size_t session_count{};
     size_t unreadable_sessions{};
+    CodexCalendar::Calendar calendar;
 };
 
 class CCodexUsageItem : public IPluginItem

@@ -64,7 +64,14 @@
     <ClInclude Include="..\include\PluginInterface.h" />
     <ClInclude Include="CodexUsagePlugin.h" />
     <ClInclude Include="JsonValue.h" />
+    <ClInclude Include="TimeBarMarkers.h" />
+    <ClInclude Include="WorkdayCalendar.h" />
   </ItemGroup>
   <ItemGroup><ClCompile Include="CodexUsagePlugin.cpp" /></ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+  <ItemGroup><CalendarFile Include="calendar\*.txt" /></ItemGroup>
+  <Target Name="CopyWorkdayCalendar" AfterTargets="Build">
+    <MakeDir Directories="$(OutDir)calendar" />
+    <Copy SourceFiles="@(CalendarFile)" DestinationFolder="$(OutDir)calendar" SkipUnchangedFiles="true" />
+  </Target>
 </Project>

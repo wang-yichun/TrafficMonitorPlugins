@@ -3,6 +3,7 @@
 
 #include "CodexUsagePlugin.h"
 #include "JsonValue.h"
+#include "TimeBarMarkers.h"
 
 #include <algorithm>
 #include <ctime>
@@ -905,10 +906,23 @@ namespace
         if (available && reset > 0)
         {
             const double duration = weekly ? 7.0 * 86400 : 5.0 * 3600;
-            const double ratio = std::clamp((reset - static_cast<long long>(time(nullptr))) / duration, 0.0, 1.0);
+            const long long now = static_cast<long long>(time(nullptr));
+            const double ratio = std::clamp((reset - now) / duration, 0.0, 1.0);
             RECT time_bar{ bar_x, top + bar_height + time_gap, bar_x + static_cast<int>(std::lround(drawn_width * ratio)), top + bar_height + time_gap + time_height };
-            HBRUSH brush = CreateSolidBrush(dark ? RGB(138, 144, 153) : RGB(107, 114, 128));
-            FillRect(dc, &time_bar, brush); DeleteObject(brush);
+            HBRUSH work_brush = CreateSolidBrush(dark ? RGB(138, 144, 153) : RGB(107, 114, 128));
+            HBRUSH rest_brush = CreateSolidBrush(dark ? RGB(110, 118, 130) : RGB(151, 160, 174));
+            const auto markers = CodexTimeBar::MarkerPixels(now, reset, weekly, drawn_width, snapshot.calendar);
+            // Leave gaps unpainted so the host's existing background remains visible.
+            for (int pixel = 0; pixel < time_bar.right - time_bar.left; ++pixel)
+            {
+                if (std::binary_search(markers.begin(), markers.end(), pixel)) continue;
+                // Match the reverse time direction of the shrinking bar; sample each pixel's center.
+                const long long timestamp = (std::max)(now, reset - static_cast<long long>((pixel + 0.5) * duration / drawn_width));
+                RECT section{ bar_x + pixel, time_bar.top, bar_x + pixel + 1, time_bar.bottom };
+                FillRect(dc, &section, CodexTimeBar::IsWorkingTime(timestamp, weekly, snapshot.calendar) ? work_brush : rest_brush);
+            }
+            DeleteObject(work_brush);
+            DeleteObject(rest_brush);
         }
         const int value_x = bar_x + drawn_width + sc(8);
         const std::wstring summary = QuotaSummary(snapshot, weekly);
@@ -922,7 +936,7 @@ namespace
         for (int i = weekly ? 1 : 0; i < count; i += 2)
         {
             const int card_size = (std::max)(10, (std::min)(sc(14), row_height - sc(3)));
-            const int bx = badge_x + (i / 2) * sc(18);
+            const int bx = badge_x + (i / 2) * (card_size + sc(2));
             if (bx + card_size > x + w) break;
             RECT badge{ bx, y + (row_height - card_size) / 2, bx + card_size, y + (row_height - card_size) / 2 + card_size };
             const long long expiry = static_cast<size_t>(i) < snapshot.reset_credit_expiries.size() ? snapshot.reset_credit_expiries[i] : 0;
@@ -935,8 +949,40 @@ namespace
             HFONT font = CreateFontW(-sc(text.size() > 2 ? 8 : 9), 0, 0, 0, FW_MEDIUM, FALSE, FALSE, FALSE,
                 DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
             HGDIOBJ old = SelectObject(dc, font);
+            const int saved_dc = SaveDC(dc);
             SetTextColor(dc, color);
-            ::DrawTextW(dc, text.c_str(), static_cast<int>(text.size()), &badge, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+            SetBkMode(dc, TRANSPARENT);
+            // Center the visible glyphs, excluding the font's leading and side bearings.
+            MAT2 identity{ { 0, 1 }, { 0, 0 }, { 0, 0 }, { 0, 1 } };
+            RECT ink{};
+            int advance = 0;
+            bool measured = true;
+            bool first_glyph = true;
+            for (wchar_t character : text)
+            {
+                GLYPHMETRICS glyph{};
+                if (GetGlyphOutlineW(dc, character, GGO_METRICS, &glyph, 0, nullptr, &identity) == GDI_ERROR)
+                {
+                    measured = false;
+                    break;
+                }
+                RECT bounds{ advance + glyph.gmptGlyphOrigin.x, -glyph.gmptGlyphOrigin.y,
+                    advance + glyph.gmptGlyphOrigin.x + static_cast<int>(glyph.gmBlackBoxX),
+                    -glyph.gmptGlyphOrigin.y + static_cast<int>(glyph.gmBlackBoxY) };
+                if (first_glyph) { ink = bounds; first_glyph = false; }
+                else { UnionRect(&ink, &ink, &bounds); }
+                advance += glyph.gmCellIncX;
+            }
+            if (measured && !first_glyph)
+            {
+                SetTextAlign(dc, TA_LEFT | TA_BASELINE | TA_NOUPDATECP);
+                TextOutW(dc, (badge.left + badge.right - ink.left - ink.right) / 2,
+                    (badge.top + badge.bottom - ink.top - ink.bottom) / 2,
+                    text.c_str(), static_cast<int>(text.size()));
+            }
+            else
+                ::DrawTextW(dc, text.c_str(), static_cast<int>(text.size()), &badge, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+            RestoreDC(dc, saved_dc);
             SelectObject(dc, old); DeleteObject(font);
         }
     }
@@ -1010,6 +1056,25 @@ void CCodexUsagePlugin::PollLoop()
 void CCodexUsagePlugin::RefreshSnapshot()
 {
     CodexSnapshot next;
+    // Load beside this DLL, independently of the host's current working directory.
+    // The worker refreshes the calendar; painting only reads the cached snapshot.
+    HMODULE module{};
+    wchar_t module_path[32768]{};
+    if (GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+        reinterpret_cast<LPCWSTR>(&TMPluginGetInstance), &module) &&
+        GetModuleFileNameW(module, module_path, static_cast<DWORD>(std::size(module_path))) > 0)
+    {
+        const auto folder = std::filesystem::path(module_path).parent_path() / L"calendar";
+        std::error_code error;
+        for (std::filesystem::directory_iterator it(folder, error), end; !error && it != end; it.increment(error))
+        {
+            if (!it->is_regular_file(error) || it->path().extension() != L".txt") continue;
+            const std::string year = it->path().stem().u8string();
+            if (year.size() != 4 || !std::all_of(year.begin(), year.end(), [](char ch) { return ch >= '0' && ch <= '9'; })) continue;
+            std::ifstream file(it->path());
+            if (file) next.calendar.ReadYear(file, std::stoi(year));
+        }
+    }
     Credentials credentials;
     if (!ReadCredentials(credentials))
     {
@@ -1174,7 +1239,7 @@ int CCodexUsageItem::GetItemWidthEx(void* hDC) const
     SIZE short_label{}, long_label{};
     GetTextExtentPoint32W(dc, L"5h", 2, &short_label);
     GetTextExtentPoint32W(dc, L"7d", 2, &long_label);
-    return sc(2 + 8 + 89 + 8 + 8 + columns * 18) + (std::max)(short_label.cx, long_label.cx) + summary_width;
+    return sc(2 + 8 + 89 + 8 + 8 + columns * 16) + (std::max)(short_label.cx, long_label.cx) + summary_width;
 }
 
 void CCodexUsageItem::DrawItem(void* hDC, int x, int y, int w, int h, bool dark_mode)
