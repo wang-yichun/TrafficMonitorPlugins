@@ -516,12 +516,16 @@ namespace
             + (chinese ? L" 亿）" : L" x 100M)");
     }
 
-    std::wstring Countdown(long long reset)
+    std::wstring Countdown(long long reset, bool weekly)
     {
         if (reset <= 0) return L"--";
         const long long remaining = (std::max)(0LL, reset - static_cast<long long>(time(nullptr)));
         const long long hours = remaining / 3600;
         const long long minutes = (remaining % 3600) / 60;
+        if (remaining < 3600)
+            return std::to_wstring(remaining / 60) + L"m" + std::to_wstring(remaining % 60) + L"s";
+        if (weekly && remaining < 86400)
+            return std::to_wstring(hours) + L"h" + std::to_wstring(minutes) + L"m";
         if (hours >= 24)
         {
             std::wostringstream out; out << (hours / 24) << L"d " << (hours % 24) << L"h"; return out.str();
@@ -555,10 +559,10 @@ namespace
             return std::wstring(CCodexUsagePlugin::Instance().IsChinese() ? L"剩余 " : L"Remaining ")
                 + std::to_wstring(static_cast<int>(std::lround(remaining))) + L"% · "
                 + (CCodexUsagePlugin::Instance().IsChinese() ? L"重置 " : L"Resets ")
-                + Countdown(weekly ? snapshot.weekly_reset : snapshot.session_reset);
+                + Countdown(weekly ? snapshot.weekly_reset : snapshot.session_reset, weekly);
         return std::wstring(CCodexUsagePlugin::Instance().IsChinese() ? L"余" : L"")
             + std::to_wstring(static_cast<int>(std::lround(remaining))) + L"% · "
-            + Countdown(weekly ? snapshot.weekly_reset : snapshot.session_reset);
+            + Countdown(weekly ? snapshot.weekly_reset : snapshot.session_reset, weekly);
     }
 
     void DrawText(HDC dc, const RECT& rect, const std::wstring& text, COLORREF color, UINT align = DT_LEFT)
