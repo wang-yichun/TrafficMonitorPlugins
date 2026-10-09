@@ -20,13 +20,13 @@ namespace CodexTimeBar
     }
 
     inline std::vector<int> MarkerPixels(long long now, long long reset, bool weekly, int width,
-        const CodexCalendar::Calendar& calendar = {})
+        const CodexCalendar::Calendar& calendar = {}, long long custom_duration = 0)
     {
         std::vector<int> pixels;
         if (width <= 0 || reset <= now) return pixels;
         constexpr long long day_seconds = 86400;
         constexpr long long beijing_offset = 8 * 3600;
-        const long long duration = weekly ? 7 * day_seconds : 5 * 3600;
+        const long long duration = custom_duration > 0 ? custom_duration : (weekly ? 7 * day_seconds : 5 * 3600);
         const long long visible_start = (std::max)(now, reset - duration);
         const long long first_day = (visible_start + beijing_offset) / day_seconds;
         const long long last_day = (reset + beijing_offset) / day_seconds;

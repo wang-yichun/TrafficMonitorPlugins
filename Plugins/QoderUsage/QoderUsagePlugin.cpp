@@ -6,6 +6,11 @@
 #include "QoderDesktopAuth.h"
 #include "JsonValue.h"
 #include "OptionsResource.h"
+#include "PluginTooltipGuard.h"
+#include "PluginAppButton.h"
+#include "../CodexUsage/TimeBarMarkers.h"
+#pragma comment(lib, "comctl32.lib")
+#pragma comment(lib, "shell32.lib")
 
 #include <algorithm>
 #include <cmath>
@@ -48,6 +53,7 @@ namespace
     };
 
     HWND g_detail_popup{};
+    PluginTooltipGuard g_tooltip_guard;
     HINSTANCE g_popup_instance{};
     bool g_popup_tracking_mouse{};
     int g_popup_dpi{ 96 };
@@ -240,11 +246,18 @@ namespace
     bool HttpGet(const wchar_t* base, const std::wstring& token, const wchar_t* path, std::wstring& body)
     {
         if (token.empty()) return false;
+        // WinHttpConnect expects a hostname, not an https:// URL.
+        URL_COMPONENTS url{};
+        url.dwStructSize = sizeof(url);
+        url.dwHostNameLength = static_cast<DWORD>(-1);
+        if (!WinHttpCrackUrl(base, 0, 0, &url) || url.nScheme != INTERNET_SCHEME_HTTPS)
+            return false;
+        const std::wstring host(url.lpszHostName, url.dwHostNameLength);
         Handle session(WinHttpOpen(L"qoder-usage", WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
             WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0));
         if (!session) return false;
         WinHttpSetTimeouts(session, kHttpTimeoutMs, kHttpTimeoutMs, kHttpTimeoutMs, kHttpTimeoutMs);
-        Handle connection(WinHttpConnect(session, base, INTERNET_DEFAULT_HTTPS_PORT, 0));
+        Handle connection(WinHttpConnect(session, host.c_str(), url.nPort, 0));
         if (!connection) return false;
         Handle request(WinHttpOpenRequest(connection, L"GET", path, nullptr,
             WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, WINHTTP_FLAG_SECURE));
@@ -290,6 +303,23 @@ namespace
 
         QoderSnapshot snapshot;
         snapshot.fetched_at = Now();
+        HMODULE module{};
+        wchar_t module_path[32768]{};
+        if (GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+            reinterpret_cast<LPCWSTR>(&TMPluginGetInstance), &module) &&
+            GetModuleFileNameW(module, module_path, 32768) > 0)
+        {
+            const auto folder = std::filesystem::path(module_path).parent_path() / L"calendar";
+            std::error_code error;
+            for (std::filesystem::directory_iterator it(folder, error), end; !error && it != end; it.increment(error))
+            {
+                if (!it->is_regular_file(error) || it->path().extension() != L".txt") continue;
+                const auto year = it->path().stem().u8string();
+                if (year.size() != 4 || !std::all_of(year.begin(), year.end(), [](char ch) { return ch >= '0' && ch <= '9'; })) continue;
+                std::ifstream file(it->path());
+                if (file) snapshot.calendar.ReadYear(file, std::stoi(year));
+            }
+        }
 
         QoderDesktopAuth::Credential credential;
         if (!QoderDesktopAuth::LoadDesktopCredential(credential))
@@ -568,16 +598,47 @@ namespace
         return lines;
     }
 
+    void HidePopupIfCursorOutside()
+    {
+        if (!g_detail_popup || !IsWindowVisible(g_detail_popup)) return;
+        POINT cursor{};
+        RECT popup_rect{};
+        if (!GetCursorPos(&cursor) || !GetWindowRect(g_detail_popup, &popup_rect)) return;
+        const bool outside = !PtInRect(&popup_rect, cursor);
+        const bool on_anchor = std::abs(cursor.x - g_popup_anchor.x) <= 12 && std::abs(cursor.y - g_popup_anchor.y) <= 12;
+        const bool clicked = (GetAsyncKeyState(VK_LBUTTON) & 0x8000) || (GetAsyncKeyState(VK_RBUTTON) & 0x8000);
+        if (GetTickCount64() - g_popup_opened > 600 && outside && (!on_anchor || clicked))
+            ShowWindow(g_detail_popup, SW_HIDE);
+    }
+
     LRESULT CALLBACK DetailPopupProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
     {
         switch (message)
         {
+        case WM_SHOWWINDOW:
+            if (wParam) g_tooltip_guard.Acquire(GetWindow(hwnd, GW_OWNER));
+            else g_tooltip_guard.Release();
+            break;
         case WM_ERASEBKGND:
             return 1;
+        case WM_MOUSEMOVE:
+            if (!g_popup_tracking_mouse)
+            {
+                TRACKMOUSEEVENT tracking{ sizeof(TRACKMOUSEEVENT), TME_LEAVE, hwnd, 0 };
+                g_popup_tracking_mouse = TrackMouseEvent(&tracking) != FALSE;
+            }
+            break;
         case WM_MOUSELEAVE:
             g_popup_tracking_mouse = false;
+            HidePopupIfCursorOutside();
             return 0;
         case WM_TIMER:
+            if (wParam == 2)
+            {
+                if (IsWindowVisible(hwnd) && (GetAsyncKeyState(VK_ESCAPE) & 0x8000)) ShowWindow(hwnd, SW_HIDE);
+                HidePopupIfCursorOutside();
+                return 0;
+            }
             if (IsWindowVisible(hwnd)) InvalidateRect(hwnd, nullptr, FALSE);
             return 0;
         case WM_PAINT:
@@ -599,6 +660,7 @@ namespace
                 DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
                 DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
             HGDIOBJ old_font = SelectObject(dc, title_font);
+            PluginAppButton::Draw(hwnd, dc, g_popup_dpi, false);
             RECT title{ pad, MulDiv(10, g_popup_dpi, 96), rect.right - pad, MulDiv(38, g_popup_dpi, 96) };
             SetTextColor(dc, RGB(46, 48, 52));
             const wchar_t* title_text = cn ? L"Qoder 用量详情" : L"Qoder usage details";
@@ -634,6 +696,7 @@ namespace
             return 0;
         }
         case WM_LBUTTONUP:
+            if (PluginAppButton::Click(hwnd, g_popup_dpi, lParam, false)) return 0;
         {
             RECT rect{}; GetClientRect(hwnd, &rect);
             const int side = MulDiv(32, g_popup_dpi, 96);
@@ -645,7 +708,9 @@ namespace
             ShowWindow(hwnd, SW_HIDE);
             return 0;
         case WM_DESTROY:
+            g_tooltip_guard.Release();
             KillTimer(hwnd, 1);
+            KillTimer(hwnd, 2);
             if (g_detail_popup == hwnd) g_detail_popup = nullptr;
             g_popup_tracking_mouse = false;
             return 0;
@@ -711,6 +776,7 @@ namespace
                 left, top, width, height, owner, nullptr, wc.hInstance, nullptr);
             if (!g_detail_popup) return;
             SetTimer(g_detail_popup, 1, 1000, nullptr);
+            SetTimer(g_detail_popup, 2, 100, nullptr);
         }
         SetWindowPos(g_detail_popup, HWND_TOPMOST, 0, 0, 0, 0,
             SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
@@ -1046,54 +1112,134 @@ const wchar_t* CQoderUsageItem::GetItemLableText() const { return L""; }
 const wchar_t* CQoderUsageItem::GetItemValueText() const { return L""; }
 const wchar_t* CQoderUsageItem::GetItemValueSampleText() const { return L"合计 100%"; }
 
+namespace
+{
+    std::pair<double, double> CombinedCredits(const QoderSnapshot& snapshot)
+    {
+        double total = 0.0, remaining = 0.0;
+        for (const auto& row : snapshot.usage.rows)
+        {
+            if (!row.quota.available || row.quota.total <= 0.0) continue;
+            total += row.quota.total;
+            remaining += (std::clamp)(row.quota.remaining, 0.0, row.quota.total);
+        }
+        return { remaining, total };
+    }
+
+    double CombinedRemaining(const QoderSnapshot& snapshot)
+    {
+        const auto credits = CombinedCredits(snapshot);
+        return snapshot.has_data && credits.second > 0.0 ? credits.first / credits.second * 100.0 : -1.0;
+    }
+
+    std::wstring RemainingPercent(const QoderSnapshot& snapshot)
+    {
+        const double remaining = CombinedRemaining(snapshot);
+        return (remaining < 0.0 ? std::wstring(L"--") : std::to_wstring(static_cast<int>(std::lround(remaining)))) + L"%";
+    }
+
+    std::wstring CompactTime(long long target, long long now)
+    {
+        if (target <= 0) return L"--";
+        const auto seconds = (std::max)(0LL, target - now);
+        if (seconds >= 86400)
+            return std::to_wstring(seconds / 86400) + L"d " + std::to_wstring(seconds % 86400 / 3600) + L"h";
+        if (seconds >= 3600)
+            return std::to_wstring(seconds / 3600) + L"小时" + std::to_wstring(seconds % 3600 / 60) + L"分钟";
+        return std::to_wstring(seconds / 60) + L"分钟" + std::to_wstring(seconds % 60) + L"秒";
+    }
+
+    std::wstring CompactSummary(const QoderSnapshot& snapshot)
+    {
+        const auto credits = CombinedCredits(snapshot);
+        const auto amount = snapshot.has_data && credits.second > 0.0
+            ? FormatNumber(credits.first) + L" / " + FormatNumber(credits.second) : L"-- / --";
+        return amount + L" · " + CompactTime(snapshot.usage.cycle_expires_at, Now());
+    }
+}
+
 int CQoderUsageItem::GetItemWidthEx(void* hDC) const
 {
-    if (hDC == nullptr) return 320;
+    if (!hDC) return 320;
     HDC dc = static_cast<HDC>(hDC);
-    const auto sc = [&](int n) { return ScaleFromHeight(dc, n); };
-    const QoderOptions options = CQoderUsagePlugin::Instance().Options();
-    const QoderSnapshot snapshot = CQoderUsagePlugin::Instance().Snapshot();
-    int rows = 0;
-    if (options.show_total) ++rows;
-    if (!snapshot.usage.rows.empty()) rows += std::min<int>(3, static_cast<int>(snapshot.usage.rows.size()));
-    if (options.show_cycle) ++rows;
-    rows = (std::clamp)(rows, 1, 4);
-    SIZE cell_size{};
-    GetTextExtentPoint32W(dc, L"剩余 100/100", 11, &cell_size);
-    return sc(2) + cell_size.cx + sc(20);
+    const auto snapshot = CQoderUsagePlugin::Instance().Snapshot();
+    const auto summary = CompactSummary(snapshot);
+    SIZE size{};
+    GetTextExtentPoint32W(dc, summary.c_str(), static_cast<int>(summary.size()), &size);
+    // Reserve the longest sub-day countdown so changing units cannot squeeze the text.
+    const auto credits = CombinedCredits(snapshot);
+    const std::wstring sample = FormatNumber(credits.second) + L" / " + FormatNumber(credits.second) + L" · 23小时59分钟";
+    SIZE sample_size{};
+    GetTextExtentPoint32W(dc, sample.c_str(), static_cast<int>(sample.size()), &sample_size);
+    SIZE percent_size{};
+    GetTextExtentPoint32W(dc, L"100%", 4, &percent_size);
+    return (std::max)((std::max)(static_cast<int>(size.cx), static_cast<int>(sample_size.cx)), ScaleFromHeight(dc, 97) + static_cast<int>(percent_size.cx))
+        + ScaleFromHeight(dc, 4);
 }
 
 void CQoderUsageItem::DrawItem(void* hDC, int x, int y, int w, int h, bool dark_mode)
 {
-    if (hDC == nullptr) return;
+    if (!hDC || w <= 0 || h <= 0) return;
     HDC dc = static_cast<HDC>(hDC);
-    const QoderOptions options = CQoderUsagePlugin::Instance().Options();
-    const QoderSnapshot snapshot = CQoderUsagePlugin::Instance().Snapshot();
+    const int saved = SaveDC(dc);
+    IntersectClipRect(dc, x, y, x + w, y + h);
+    const auto options = CQoderUsagePlugin::Instance().Options();
+    const auto snapshot = CQoderUsagePlugin::Instance().Snapshot();
     if (options.theme != 0) dark_mode = options.theme == 2;
-    std::vector<const QoderQuotaRow*> rows;
-    if (options.show_total && snapshot.usage.total_usage_percentage >= 0.0)
-        rows.push_back(nullptr); // sentinel = total row
-    for (const QoderQuotaRow& row : snapshot.usage.rows)
-        rows.push_back(&row);
-    if (rows.empty() && options.show_total) rows.push_back(nullptr);
-    const bool has_cycle = options.show_cycle && snapshot.usage.cycle_expires_at > 0;
-    const int total_rows = static_cast<int>(rows.size()) + (has_cycle ? 1 : 0);
-    const int row_height = (std::max)(8, h / (std::max)(1, total_rows));
-    int top = y;
-    for (size_t i = 0; i < rows.size(); ++i)
+    TEXTMETRICW metrics{}; GetTextMetricsW(dc, &metrics);
+    const auto sc = [&](int n) { return MulDiv(n, (std::max)(16L, metrics.tmHeight), 16); };
+    const int row_height = h / 2;
+    const int left = x + sc(2);
+    const double remaining = CombinedRemaining(snapshot);
+    const COLORREF filled = remaining <= 20.0
+        ? (dark_mode ? RGB(242, 139, 130) : RGB(197, 34, 31))
+        : remaining <= 50.0
+            ? (dark_mode ? RGB(253, 214, 99) : RGB(227, 116, 0))
+            : (dark_mode ? RGB(129, 201, 149) : RGB(24, 128, 56));
+    const COLORREF empty = dark_mode ? RGB(82, 91, 101) : RGB(194, 202, 211);
+    const int gap = sc(1);
+    const int cell_width = (sc(89) - 9 * gap) / 10;
+    const int bar_height = (std::max)(2, (std::min)(sc(13), row_height - 1 - sc(2) - (std::max)(3, sc(3))));
+    const int top = y + (std::max)(2, sc(1)) + 1
+        + (std::max)(0, (row_height - bar_height - 1 - sc(2) - (std::max)(3, sc(3))) / 2);
+    for (int i = 0; i < 10; ++i)
     {
-        const int this_height = (i + 1 == rows.size() && !has_cycle) ? (y + h - top) : row_height;
-        if (rows[i] == nullptr) DrawTotalRow(dc, options, snapshot.usage, x, top, w, this_height, dark_mode);
-        else DrawQuotaRow(dc, options, *rows[i], x, top, w, this_height, dark_mode);
-        top += this_height;
+        RECT cell{left + i * (cell_width + gap), top, left + i * (cell_width + gap) + cell_width, top + bar_height};
+        HBRUSH brush = CreateSolidBrush(empty);
+        FillRect(dc, &cell, brush); DeleteObject(brush);
+        const double covered = remaining < 0.0 ? 0.0 : (std::clamp)(remaining / 10.0 - i, 0.0, 1.0);
+        const int fill_height = static_cast<int>(std::lround(bar_height * covered));
+        if (fill_height > 0)
+        {
+            RECT fill{cell.left, cell.bottom - fill_height, cell.right, cell.bottom};
+            brush = CreateSolidBrush(filled);
+            FillRect(dc, &fill, brush); DeleteObject(brush);
+        }
     }
-    if (has_cycle)
+    // Daily claim window in Beijing time: 10:00 today through 10:00 tomorrow.
+    constexpr long long duration = 86400;
+    const long long now = Now();
+    const long long reset = ((now + 8 * 3600 - 10 * 3600) / duration + 1) * duration + 10 * 3600 - 8 * 3600;
+    const int drawn_width = 10 * (cell_width + gap) - gap;
+    const int visible_width = static_cast<int>(std::lround(drawn_width * static_cast<double>(reset - now) / duration));
+    const auto markers = CodexTimeBar::MarkerPixels(now, reset, false, drawn_width, snapshot.calendar, duration);
+    HBRUSH work = CreateSolidBrush(dark_mode ? RGB(138, 144, 153) : RGB(107, 114, 128));
+    HBRUSH rest = CreateSolidBrush(dark_mode ? RGB(110, 118, 130) : RGB(151, 160, 174));
+    for (int pixel = 0; pixel < visible_width; ++pixel)
     {
-        const int this_height = y + h - top;
-        DrawCycleRow(dc, options, snapshot.usage, x, top, w, this_height, dark_mode);
+        if (std::binary_search(markers.begin(), markers.end(), pixel)) continue;
+        const long long timestamp = (std::max)(now, reset - static_cast<long long>((pixel + 0.5) * duration / drawn_width));
+        RECT section{left + pixel, top + bar_height + 1, left + pixel + 1, top + bar_height + 1 + sc(2)};
+        FillRect(dc, &section, CodexTimeBar::IsWorkingTime(timestamp, false, snapshot.calendar) ? work : rest);
     }
+    DeleteObject(work);
+    DeleteObject(rest);
+    RECT percent_rect{left + drawn_width + sc(8), y, x + w, y + row_height};
+    DrawText(dc, percent_rect, RemainingPercent(snapshot), dark_mode ? RGB(235, 238, 242) : RGB(45, 49, 54), DT_LEFT);
+    RECT text_rect{left, y + row_height, x + w, y + h};
+    DrawText(dc, text_rect, CompactSummary(snapshot), dark_mode ? RGB(235, 238, 242) : RGB(45, 49, 54), DT_LEFT);
+    if (saved) RestoreDC(dc, saved);
 }
-
 int CQoderUsageItem::OnMouseEvent(MouseEventType type, int /*x*/, int /*y*/, void* hWnd, int /*flag*/)
 {
     if (type == MT_LCLICKED)

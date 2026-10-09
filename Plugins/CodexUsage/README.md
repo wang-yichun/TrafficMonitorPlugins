@@ -56,6 +56,12 @@ The quota display has ten narrow vertical cells per row. Each cell represents 10
 
 Click the item to open or close the grouped detail panel. The panel also closes with its close button, Escape, or when the pointer leaves the popup and its opening position. Account, quota and local token data refresh after a 60-second wait following each refresh; visible countdowns update every second. Manual refresh is available in the plugin commands.
 
+Compact quota text shows the percentage directly, without the Chinese `余` prefix. The popup header includes an **Open Codex App** button (Chinese: `打开 Codex App`). It opens the installed Windows app through `shell:AppsFolder\OpenAI.Codex_2p2nqsd0c76g0!App`; the desktop app must be installed. This launches the desktop app rather than the Codex CLI.
+
+While either the Codex or Qoder detail panel is visible, the owning TrafficMonitor window's native tooltip is hidden and prevented from showing again. Closing or hiding all panels restores normal host tooltips. Shared suppression counts support overlapping plugin panels. The guard also intercepts repeated host show requests, so a stationary pointer cannot bring the host tooltip back over an open detail panel.
+
+The current local runtime is `D:\Projects\TrafficMonitor\TrafficMonitor.exe`, with DLLs in `D:\Projects\TrafficMonitor\plugins`. Release x64 builds, tooltip suppression/restoration checks, loaded-module paths and installed DLL checksums have been verified. Final visual inspection and desktop-app button activation remain manual acceptance checks.
+
 ## Plugin options
 
 Open TrafficMonitor's plugin manager, select Codex Usage, and choose plugin options.

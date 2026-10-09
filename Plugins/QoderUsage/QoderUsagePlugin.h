@@ -1,6 +1,7 @@
 #pragma once
 
 #include "PluginInterface.h"
+#include "../CodexUsage/WorkdayCalendar.h"
 
 #include <atomic>
 #include <condition_variable>
@@ -45,6 +46,7 @@ struct QoderUsage
 
 struct QoderSnapshot
 {
+    CodexCalendar::Calendar calendar;
     QoderUsage usage;
     long long fetched_at{};
     std::wstring credential_label;   // human label only (no token)

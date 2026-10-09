@@ -5,6 +5,10 @@
 #include "JsonValue.h"
 #include "TimeBarMarkers.h"
 #include "OptionsResource.h"
+#include "PluginTooltipGuard.h"
+#include "PluginAppButton.h"
+#pragma comment(lib, "comctl32.lib")
+#pragma comment(lib, "shell32.lib")
 
 #include <algorithm>
 #include <ctime>
@@ -29,6 +33,7 @@ namespace
     constexpr wchar_t kDetailPopupClass[] = L"TrafficMonitorCodexUsageDetails";
 
     HWND g_detail_popup{};
+    PluginTooltipGuard g_tooltip_guard;
     HINSTANCE g_popup_instance{};
     bool g_popup_tracking_mouse{};
     std::vector<std::wstring> g_popup_lines;
@@ -560,7 +565,7 @@ namespace
                 + std::to_wstring(static_cast<int>(std::lround(remaining))) + L"% · "
                 + (CCodexUsagePlugin::Instance().IsChinese() ? L"重置 " : L"Resets ")
                 + Countdown(weekly ? snapshot.weekly_reset : snapshot.session_reset, weekly);
-        return std::wstring(CCodexUsagePlugin::Instance().IsChinese() ? L"余" : L"")
+        return std::wstring(CCodexUsagePlugin::Instance().IsChinese() ? L"" : L"")
             + std::to_wstring(static_cast<int>(std::lround(remaining))) + L"% · "
             + Countdown(weekly ? snapshot.weekly_reset : snapshot.session_reset, weekly);
     }
@@ -635,6 +640,10 @@ namespace
     {
         switch (message)
         {
+        case WM_SHOWWINDOW:
+            if (wParam) g_tooltip_guard.Acquire(GetWindow(hwnd, GW_OWNER));
+            else g_tooltip_guard.Release();
+            break;
         case WM_ERASEBKGND:
             return 1;
         case WM_MOUSEMOVE:
@@ -684,6 +693,7 @@ namespace
                 DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
                 DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
             HGDIOBJ old_font = SelectObject(dc, title_font);
+            PluginAppButton::Draw(hwnd, dc, g_popup_dpi, true);
             RECT title{ MulDiv(14, g_popup_dpi, 96), MulDiv(10, g_popup_dpi, 96), rect.right - MulDiv(14, g_popup_dpi, 96), MulDiv(38, g_popup_dpi, 96) };
             const wchar_t* title_text = chinese ? L"Codex 用量与 Token" : L"Codex usage and tokens";
             ::DrawTextW(dc, title_text, -1, &title, DT_SINGLELINE | DT_VCENTER);
@@ -784,6 +794,7 @@ namespace
             return 0;
         }
         case WM_LBUTTONUP:
+            if (PluginAppButton::Click(hwnd, g_popup_dpi, lParam, true)) return 0;
         {
             RECT rect{}; GetClientRect(hwnd, &rect);
             const int side = MulDiv(32, g_popup_dpi, 96);
@@ -795,6 +806,7 @@ namespace
             ShowWindow(hwnd, SW_HIDE);
             return 0;
         case WM_DESTROY:
+            g_tooltip_guard.Release();
             KillTimer(hwnd, 1);
             KillTimer(hwnd, 2);
             if (g_detail_popup == hwnd) g_detail_popup = nullptr;
