@@ -127,17 +127,21 @@ namespace
         const std::uint8_t* tag = ciphertext + cipher_len;
 
         BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO info{};
+        info.cbSize = sizeof(BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO);
+        info.dwInfoVersion = BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO_VERSION;
         info.pbNonce = const_cast<PUCHAR>(nonce);
         info.cbNonce = static_cast<ULONG>(kGcmNonceLen);
         info.pbTag = const_cast<PUCHAR>(tag);
         info.cbTag = static_cast<ULONG>(kGcmTagLen);
         plain.assign(cipher_len, 0);
 
-        // The Microsoft GCM implementation requires tag size in pbAuthInfo.
-        BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO* pInfo = &info;
-        return BCRYPT_SUCCESS(BCryptDecrypt(ctx.key, const_cast<PUCHAR>(ciphertext),
-            static_cast<ULONG>(cipher_len), pInfo, nullptr, 0, plain.data(),
-            static_cast<ULONG>(plain.size()), nullptr, 0));
+        // pcbResult must be non-null for GCM decrypt; NULL returns STATUS_INVALID_PARAMETER.
+        ULONG result_len = 0;
+        const BOOL decrypted = BCRYPT_SUCCESS(BCryptDecrypt(ctx.key, const_cast<PUCHAR>(ciphertext),
+            static_cast<ULONG>(cipher_len), &info, nullptr, 0, plain.data(),
+            static_cast<ULONG>(plain.size()), &result_len, 0));
+        plain.resize(result_len);
+        return decrypted;
     }
 
     long long ParseEpoch(const JsonValue* value)
