@@ -174,8 +174,7 @@ bool QoderDesktopAuth::LoadDesktopCredential(Credential& credential)
     if (aes_key.empty()) return false;
 
     const std::wstring auth_path = local_state.substr(0, local_state.find_last_of(L'\\')) + L"\\auth.v1.dat";
-    const std::wstring auth_text = ReadUtf8File(auth_path);
-    if (auth_text.empty()) return false;
+    if (GetFileAttributesW(auth_path.c_str()) == INVALID_FILE_ATTRIBUTES) return false;
 
     // The auth file is stored as raw bytes; read it as bytes to preserve the GCM tag layout.
     std::ifstream auth_file(auth_path, std::ios::binary);
