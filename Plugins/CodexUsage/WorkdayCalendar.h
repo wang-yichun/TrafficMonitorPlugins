@@ -46,6 +46,11 @@ namespace CodexCalendar
             return weekday >= 1 && weekday <= 5;
         }
 
+        bool HasOverride(long long day) const
+        {
+            return workdays.count(day) != 0 || holidays.count(day) != 0;
+        }
+
         void ReadYear(std::istream& input, int year)
         {
             std::string line;

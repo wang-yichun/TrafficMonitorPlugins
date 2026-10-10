@@ -2,6 +2,8 @@
 
 This plugin ports the Codex portion of Codex Usage Monitor into TrafficMonitor. It draws segmented 5-hour / 7-day remaining-quota rows, reads today's cumulative token totals from local Codex session logs, and shows account/reset-credit details in a scrollable popup.
 
+![Codex Usage taskbar quota bars](images/quota-time-bars.png)
+
 ## Build and try in PluginTester
 
 This directory is the sole source for the Codex plugin. The TrafficMonitor host repository loads the DLL and does not contain or build a source copy of this plugin.
@@ -31,6 +33,8 @@ The total also shows a conversion to units of 100 million tokens (亿 in Chinese
 The time bar uses Beijing civil dates. Five-hour markers for 09:30, 12:00, 13:30 and 18:30 appear only on working days. Weekly markers separate continuous working-day and rest-day periods, including official holidays and make-up workdays.
 
 The time bar keeps its original gray for working periods and uses a muted gray for rest periods, with enough contrast against the host background. On the weekly bar, all hours of a workday count as working periods. On the five-hour bar, only 09:30–12:00 and 13:30–18:30 on workdays count as working periods; lunch, evenings and holidays use the rest color.
+
+The plugin options let you choose the weekly rest pattern: two days off (Saturday and Sunday), one day off (Sunday), or alternating A/B weeks. A means Saturdays are off on odd ISO weeks; B is the opposite phase. Official holidays and make-up workdays still take precedence. The five-hour bar's morning and afternoon start/end times are also editable in `HH:mm` format (defaults: 09:30, 12:00, 13:30 and 18:30). The compact time-bar section is disabled when the time bar itself is hidden.
 
 Edit `calendar/YYYY.txt` beside the installed `CodexUsage.dll` (usually `plugins/calendar/2026.txt`). Each UTF-8 file belongs to the year in its filename. Lines use these formats; range endpoints are inclusive:
 
@@ -72,6 +76,7 @@ The dialog follows the host's Chinese or English language and supports:
 - Segmented or continuous quota bars; compact or detailed quota text.
 - Show the 5-hour and/or 7-day quota (at least one must remain visible).
 - Show reset cards and the time bar independently.
+- Choose two-day, one-day, or alternating A/B weekly rest schedules, and set the five-hour bar's four work-period boundaries.
 
 Defaults preserve the existing display. Settings apply on OK and persist in
 `CodexUsage.ini` in TrafficMonitor's plugin configuration directory. Cancel leaves

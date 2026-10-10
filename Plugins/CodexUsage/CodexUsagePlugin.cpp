@@ -941,7 +941,9 @@ namespace
             RECT time_bar{ bar_x, top + bar_height + time_gap, bar_x + static_cast<int>(std::lround(drawn_width * ratio)), top + bar_height + time_gap + time_height };
             HBRUSH work_brush = CreateSolidBrush(dark ? RGB(138, 144, 153) : RGB(107, 114, 128));
             HBRUSH rest_brush = CreateSolidBrush(dark ? RGB(110, 118, 130) : RGB(151, 160, 174));
-            const auto markers = CodexTimeBar::MarkerPixels(now, reset, weekly, drawn_width, snapshot.calendar);
+            const CodexTimeBar::Schedule schedule{ options.rest_schedule, options.morning_start, options.morning_end,
+                options.afternoon_start, options.afternoon_end };
+            const auto markers = CodexTimeBar::MarkerPixels(now, reset, weekly, drawn_width, snapshot.calendar, 0, schedule);
             // Leave gaps unpainted so the host's existing background remains visible.
             for (int pixel = 0; pixel < time_bar.right - time_bar.left; ++pixel)
             {
@@ -949,7 +951,7 @@ namespace
                 // Match the reverse time direction of the shrinking bar; sample each pixel's center.
                 const long long timestamp = (std::max)(now, reset - static_cast<long long>((pixel + 0.5) * duration / drawn_width));
                 RECT section{ bar_x + pixel, time_bar.top, bar_x + pixel + 1, time_bar.bottom };
-                FillRect(dc, &section, CodexTimeBar::IsWorkingTime(timestamp, weekly, snapshot.calendar) ? work_brush : rest_brush);
+                FillRect(dc, &section, CodexTimeBar::IsWorkingTime(timestamp, weekly, snapshot.calendar, schedule) ? work_brush : rest_brush);
             }
             DeleteObject(work_brush);
             DeleteObject(rest_brush);
@@ -1071,6 +1073,20 @@ void CCodexUsagePlugin::OnInitialize(ITrafficMonitor* app)
         options.show_weekly = read(L"ShowWeekly", 1) != 0;
         options.show_cards = read(L"ShowCards", 1) != 0;
         options.show_time_bar = read(L"ShowTimeBar", 1) != 0;
+        options.rest_schedule = (std::clamp)(read(L"RestSchedule", 0), 0, 3);
+        const auto valid_minute = [](int minute) { return minute >= 0 && minute < 24 * 60; };
+        options.morning_start = read(L"MorningStart", 9 * 60 + 30);
+        options.morning_end = read(L"MorningEnd", 12 * 60);
+        options.afternoon_start = read(L"AfternoonStart", 13 * 60 + 30);
+        options.afternoon_end = read(L"AfternoonEnd", 18 * 60 + 30);
+        if (!valid_minute(options.morning_start) || !valid_minute(options.morning_end) ||
+            !valid_minute(options.afternoon_start) || !valid_minute(options.afternoon_end) ||
+            options.morning_start >= options.morning_end || options.morning_end > options.afternoon_start ||
+            options.afternoon_start >= options.afternoon_end)
+        {
+            options.morning_start = 9 * 60 + 30; options.morning_end = 12 * 60;
+            options.afternoon_start = 13 * 60 + 30; options.afternoon_end = 18 * 60 + 30;
+        }
         if (!options.show_session && !options.show_weekly) options.show_session = true;
         std::lock_guard<std::mutex> lock(m_options_mutex);
         m_options = options;
@@ -1283,8 +1299,33 @@ namespace
         add(L"ShowWeekly", options.show_weekly);
         add(L"ShowCards", options.show_cards);
         add(L"ShowTimeBar", options.show_time_bar);
+        add(L"RestSchedule", options.rest_schedule);
+        add(L"MorningStart", options.morning_start);
+        add(L"MorningEnd", options.morning_end);
+        add(L"AfternoonStart", options.afternoon_start);
+        add(L"AfternoonEnd", options.afternoon_end);
         section.push_back(L'\0');
         return section;
+    }
+
+    std::wstring FormatClock(int minute)
+    {
+        wchar_t text[6]{};
+        swprintf_s(text, L"%02d:%02d", minute / 60, minute % 60);
+        return text;
+    }
+
+    bool ParseClock(HWND dialog, int id, int& minute)
+    {
+        wchar_t text[16]{};
+        GetDlgItemTextW(dialog, id, text, static_cast<int>(std::size(text)));
+        if (wcslen(text) != 5 || text[2] != L':') return false;
+        for (int i : {0, 1, 3, 4}) if (text[i] < L'0' || text[i] > L'9') return false;
+        const int hour = (text[0] - L'0') * 10 + text[1] - L'0';
+        const int mins = (text[3] - L'0') * 10 + text[4] - L'0';
+        if (hour > 23 || mins > 59) return false;
+        minute = hour * 60 + mins;
+        return true;
     }
 
     INT_PTR CALLBACK OptionsDialogProc(HWND dialog, UINT message, WPARAM wp, LPARAM)
@@ -1306,6 +1347,13 @@ namespace
                 : std::initializer_list<const wchar_t*>{L"Segmented", L"Continuous"}, options.bar_style);
             combo(IDC_TEXT, chinese ? std::initializer_list<const wchar_t*>{L"简洁", L"详细"}
                 : std::initializer_list<const wchar_t*>{L"Compact", L"Detailed"}, options.text_style);
+            combo(IDC_REST_SCHEDULE, chinese
+                ? std::initializer_list<const wchar_t*>{L"双休（周六、周日休）", L"单休（周日休）", L"单双轮休 A（A 周双休）", L"单双轮休 B（B 周双休）"}
+                : std::initializer_list<const wchar_t*>{L"Two days off (Sat/Sun)", L"One day off (Sun)", L"Alternating A (A week: Sat/Sun off)", L"Alternating B (B week: Sat/Sun off)"}, options.rest_schedule);
+            SetDlgItemTextW(dialog, IDC_MORNING_START, FormatClock(options.morning_start).c_str());
+            SetDlgItemTextW(dialog, IDC_MORNING_END, FormatClock(options.morning_end).c_str());
+            SetDlgItemTextW(dialog, IDC_AFTERNOON_START, FormatClock(options.afternoon_start).c_str());
+            SetDlgItemTextW(dialog, IDC_AFTERNOON_END, FormatClock(options.afternoon_end).c_str());
             CheckDlgButton(dialog, IDC_SESSION, options.show_session ? BST_CHECKED : BST_UNCHECKED);
             CheckDlgButton(dialog, IDC_WEEKLY, options.show_weekly ? BST_CHECKED : BST_UNCHECKED);
             CheckDlgButton(dialog, IDC_CARDS, options.show_cards ? BST_CHECKED : BST_UNCHECKED);
@@ -1317,11 +1365,17 @@ namespace
                     {IDC_POLL_LABEL, L"刷新频率"}, {IDC_THEME_LABEL, L"主题"}, {IDC_BAR_LABEL, L"额度进度条"},
                     {IDC_TEXT_LABEL, L"文字样式"}, {IDC_SESSION, L"显示 5 小时额度"}, {IDC_WEEKLY, L"显示 7 天额度"},
                     {IDC_CARDS, L"显示重置卡片"}, {IDC_TIME_BAR, L"显示时间进度条"},
+                    {IDC_SCHEDULE_LABEL, L"每周休息安排"}, {IDC_MORNING_LABEL, L"上午时段"},
+                    {IDC_AFTERNOON_LABEL, L"下午时段"}, {IDC_MORNING_TO, L"至"}, {IDC_AFTERNOON_TO, L"至"},
                     {IDC_HINT, L"窗口位置和背景由 TrafficMonitor 控制。至少保留一个额度窗口。"},
                     {IDOK, L"确定"}, {IDCANCEL, L"取消"}
                 };
                 for (const auto& label : labels) SetDlgItemTextW(dialog, label.first, label.second);
             }
+            const bool time_bar_enabled = options.show_time_bar;
+            for (int id : { IDC_SCHEDULE_LABEL, IDC_REST_SCHEDULE, IDC_MORNING_LABEL, IDC_MORNING_START,
+                IDC_MORNING_TO, IDC_MORNING_END, IDC_AFTERNOON_LABEL, IDC_AFTERNOON_START, IDC_AFTERNOON_TO, IDC_AFTERNOON_END })
+                EnableWindow(GetDlgItem(dialog, id), time_bar_enabled);
             RECT bounds{}, owner{};
             GetWindowRect(dialog, &bounds);
             GetWindowRect(GetParent(dialog) ? GetParent(dialog) : GetDesktopWindow(), &owner);
@@ -1331,6 +1385,14 @@ namespace
         }
         if (message == WM_COMMAND)
         {
+            if (LOWORD(wp) == IDC_TIME_BAR && HIWORD(wp) == BN_CLICKED)
+            {
+                const bool enabled = IsDlgButtonChecked(dialog, IDC_TIME_BAR) == BST_CHECKED;
+                for (int id : { IDC_SCHEDULE_LABEL, IDC_REST_SCHEDULE, IDC_MORNING_LABEL, IDC_MORNING_START,
+                    IDC_MORNING_TO, IDC_MORNING_END, IDC_AFTERNOON_LABEL, IDC_AFTERNOON_START, IDC_AFTERNOON_TO, IDC_AFTERNOON_END })
+                    EnableWindow(GetDlgItem(dialog, id), enabled);
+                return TRUE;
+            }
             if (LOWORD(wp) == IDCANCEL) { EndDialog(dialog, IDCANCEL); return TRUE; }
             if (LOWORD(wp) == IDOK)
             {
@@ -1344,6 +1406,22 @@ namespace
                 options.show_weekly = IsDlgButtonChecked(dialog, IDC_WEEKLY) == BST_CHECKED;
                 options.show_cards = IsDlgButtonChecked(dialog, IDC_CARDS) == BST_CHECKED;
                 options.show_time_bar = IsDlgButtonChecked(dialog, IDC_TIME_BAR) == BST_CHECKED;
+                options.rest_schedule = static_cast<int>(SendDlgItemMessageW(dialog, IDC_REST_SCHEDULE, CB_GETCURSEL, 0, 0));
+                if (options.rest_schedule < 0 || options.rest_schedule > 3 ||
+                    !ParseClock(dialog, IDC_MORNING_START, options.morning_start) ||
+                    !ParseClock(dialog, IDC_MORNING_END, options.morning_end) ||
+                    !ParseClock(dialog, IDC_AFTERNOON_START, options.afternoon_start) ||
+                    !ParseClock(dialog, IDC_AFTERNOON_END, options.afternoon_end))
+                {
+                    MessageBoxW(dialog, chinese ? L"请输入有效时间，格式为 HH:mm。" : L"Enter valid times in HH:mm format.", L"Codex Usage", MB_OK | MB_ICONINFORMATION);
+                    return TRUE;
+                }
+                if (options.morning_start >= options.morning_end || options.morning_end > options.afternoon_start ||
+                    options.afternoon_start >= options.afternoon_end)
+                {
+                    MessageBoxW(dialog, chinese ? L"请确保上午开始 < 上午结束 ≤ 下午开始 < 下午结束。" : L"Times must satisfy morning start < morning end ≤ afternoon start < afternoon end.", L"Codex Usage", MB_OK | MB_ICONINFORMATION);
+                    return TRUE;
+                }
                 if (!options.show_session && !options.show_weekly)
                 {
                     MessageBoxW(dialog, chinese ? L"请至少选择一个额度窗口。" : L"Select at least one quota window.", L"Codex Usage", MB_OK | MB_ICONINFORMATION);

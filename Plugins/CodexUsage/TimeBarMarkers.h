@@ -8,19 +8,49 @@
 
 namespace CodexTimeBar
 {
-    inline bool IsWorkingTime(long long timestamp, bool weekly, const CodexCalendar::Calendar& calendar)
+    struct Schedule
+    {
+        int rest_schedule{};
+        int morning_start{9 * 60 + 30};
+        int morning_end{12 * 60};
+        int afternoon_start{13 * 60 + 30};
+        int afternoon_end{18 * 60 + 30};
+    };
+
+    inline bool IsScheduledWorkday(long long day, const CodexCalendar::Calendar& calendar, int rest_schedule)
+    {
+        if (calendar.HasOverride(day)) return calendar.IsWorkday(day);
+        const int weekday = static_cast<int>((day + 4) % 7); // Sunday=0
+        const bool saturday = weekday == 6;
+        const bool sunday = weekday == 0;
+        if (sunday) return false;
+        if (!saturday) return true;
+        if (rest_schedule == 1) return true;
+        if (rest_schedule == 2 || rest_schedule == 3)
+        {
+            // ISO week 1 of 1970 starts on 1969-12-29; A means odd ISO weeks rest on Saturday.
+            const long long monday = day - ((weekday + 6) % 7);
+            const long long week_index = (monday - CodexCalendar::DayNumber(1969, 12, 29)) / 7;
+            const bool odd_week = ((week_index % 2) + 2) % 2 == 0;
+            const bool double_rest_week = rest_schedule == 2 ? odd_week : !odd_week;
+            return !double_rest_week;
+        }
+        return false;
+    }
+
+    inline bool IsWorkingTime(long long timestamp, bool weekly, const CodexCalendar::Calendar& calendar, const Schedule& schedule = {})
     {
         const long long beijing = timestamp + 8 * 3600;
         const long long day = beijing / 86400;
-        if (!calendar.IsWorkday(day)) return false;
+        if (!IsScheduledWorkday(day, calendar, schedule.rest_schedule)) return false;
         if (weekly) return true;
         const long long seconds = beijing % 86400;
-        return (seconds >= (9 * 60 + 30) * 60 && seconds < 12 * 3600) ||
-            (seconds >= (13 * 60 + 30) * 60 && seconds < (18 * 60 + 30) * 60);
+        return (seconds >= schedule.morning_start * 60 && seconds < schedule.morning_end * 60) ||
+            (seconds >= schedule.afternoon_start * 60 && seconds < schedule.afternoon_end * 60);
     }
 
     inline std::vector<int> MarkerPixels(long long now, long long reset, bool weekly, int width,
-        const CodexCalendar::Calendar& calendar = {}, long long custom_duration = 0)
+        const CodexCalendar::Calendar& calendar = {}, long long custom_duration = 0, const Schedule& schedule = {})
     {
         std::vector<int> pixels;
         if (width <= 0 || reset <= now) return pixels;
@@ -42,11 +72,11 @@ namespace CodexTimeBar
             const long long midnight = day * day_seconds - beijing_offset;
             if (weekly)
             {
-                if (calendar.IsWorkday(day) != calendar.IsWorkday(day - 1)) add(midnight);
+                if (IsScheduledWorkday(day, calendar, schedule.rest_schedule) != IsScheduledWorkday(day - 1, calendar, schedule.rest_schedule)) add(midnight);
             }
-            else if (calendar.IsWorkday(day))
+            else if (IsScheduledWorkday(day, calendar, schedule.rest_schedule))
             {
-                for (int minutes : { 9 * 60 + 30, 12 * 60, 13 * 60 + 30, 18 * 60 + 30 })
+                for (int minutes : { schedule.morning_start, schedule.morning_end, schedule.afternoon_start, schedule.afternoon_end })
                     add(midnight + minutes * 60);
             }
         }
