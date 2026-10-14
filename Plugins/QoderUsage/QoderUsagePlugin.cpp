@@ -1149,11 +1149,17 @@ namespace
         return std::to_wstring(seconds / 60) + L"分钟" + std::to_wstring(seconds % 60) + L"秒";
     }
 
+    bool HideCompactCountdown(const QoderSnapshot& snapshot)
+    {
+        return snapshot.usage.cycle_expires_at - Now() > 365LL * 86400;
+    }
+
     std::wstring CompactSummary(const QoderSnapshot& snapshot)
     {
         const auto credits = CombinedCredits(snapshot);
         const auto amount = snapshot.has_data && credits.second > 0.0
             ? FormatNumber(credits.first) + L" / " + FormatNumber(credits.second) : L"-- / --";
+        if (HideCompactCountdown(snapshot)) return amount + L" Credits";
         return amount + L" · " + CompactTime(snapshot.usage.cycle_expires_at, Now());
     }
 }
@@ -1168,7 +1174,8 @@ int CQoderUsageItem::GetItemWidthEx(void* hDC) const
     GetTextExtentPoint32W(dc, summary.c_str(), static_cast<int>(summary.size()), &size);
     // Reserve the longest sub-day countdown so changing units cannot squeeze the text.
     const auto credits = CombinedCredits(snapshot);
-    const std::wstring sample = FormatNumber(credits.second) + L" / " + FormatNumber(credits.second) + L" · 23小时59分钟";
+    const std::wstring sample = FormatNumber(credits.second) + L" / " + FormatNumber(credits.second)
+        + (HideCompactCountdown(snapshot) ? L" Credits" : L" · 23小时59分钟");
     SIZE sample_size{};
     GetTextExtentPoint32W(dc, sample.c_str(), static_cast<int>(sample.size()), &sample_size);
     SIZE percent_size{};
