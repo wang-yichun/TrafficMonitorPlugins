@@ -29,6 +29,7 @@ struct CodexOptions
 
 struct CodexSnapshot
 {
+    bool remote_unavailable{true};
     bool has_session{};
     bool has_weekly{};
     double session_used{};
@@ -101,6 +102,7 @@ private:
     bool m_is_chinese{ true };
     mutable std::mutex m_snapshot_mutex;
     CodexSnapshot m_snapshot;
+    CodexSnapshot m_remote_cache; // Worker-owned remote data, before local detail formatting.
     std::mutex m_worker_mutex;
     std::condition_variable m_worker_cv;
     std::atomic<bool> m_stop{ false };

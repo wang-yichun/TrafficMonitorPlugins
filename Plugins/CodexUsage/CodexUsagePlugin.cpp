@@ -1,7 +1,13 @@
 #include <Windows.h>
 #include <Winhttp.h>
+#include <objidl.h>
+#include <gdiplus.h>
+#include <Shlwapi.h>
+#pragma comment(lib, "gdiplus.lib")
+#pragma comment(lib, "shlwapi.lib")
 
 #include "CodexUsagePlugin.h"
+#include "RemoteSnapshotCache.h"
 #include "JsonValue.h"
 #include "TimeBarMarkers.h"
 #include "OptionsResource.h"
@@ -873,6 +879,69 @@ namespace
         InvalidateRect(g_detail_popup, nullptr, FALSE);
     }
 
+    // Visual preview: one shared icon replaces both quota labels.
+    class OfflineIcon
+    {
+    public:
+        OfflineIcon()
+        {
+            Gdiplus::GdiplusStartupInput input;
+            if (Gdiplus::GdiplusStartup(&token, &input, nullptr) != Gdiplus::Ok) return;
+            HMODULE module{};
+            GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                reinterpret_cast<LPCWSTR>(&g_detail_popup), &module);
+            HRSRC resource = FindResourceW(module, MAKEINTRESOURCEW(IDR_NETWORK_OFFLINE), RT_RCDATA);
+            if (!resource) return;
+            HGLOBAL data = LoadResource(module, resource);
+            if (!data) return;
+            stream = SHCreateMemStream(static_cast<const BYTE*>(LockResource(data)), SizeofResource(module, resource));
+            if (stream) bitmap = Gdiplus::Bitmap::FromStream(stream);
+            if (bitmap && bitmap->GetLastStatus() == Gdiplus::Ok)
+            {
+                // Ignore transparent margins when fitting the user's icon.
+                int left = bitmap->GetWidth(), top = bitmap->GetHeight(), right = -1, bottom = -1;
+                for (UINT y = 0; y < bitmap->GetHeight(); ++y)
+                    for (UINT x = 0; x < bitmap->GetWidth(); ++x)
+                    {
+                        Gdiplus::Color pixel;
+                        if (bitmap->GetPixel(x, y, &pixel) == Gdiplus::Ok && pixel.GetAlpha() != 0)
+                        {
+                            left = (std::min)(left, static_cast<int>(x));
+                            top = (std::min)(top, static_cast<int>(y));
+                            right = (std::max)(right, static_cast<int>(x));
+                            bottom = (std::max)(bottom, static_cast<int>(y));
+                        }
+                    }
+                if (right >= left && bottom >= top)
+                    source = Gdiplus::Rect(left, top, right - left + 1, bottom - top + 1);
+            }
+        }
+        ~OfflineIcon()
+        {
+            delete bitmap;
+            if (stream) stream->Release();
+            // GDI+ shutdown cannot run under the DLL detach loader lock; process exit reclaims it.
+        }
+        void Draw(HDC dc, int x, int y, int width, int height)
+        {
+            if (!bitmap || bitmap->GetLastStatus() != Gdiplus::Ok || width <= 0 || height <= 0 || source.Width <= 0 || source.Height <= 0) return;
+            const double scale = (std::min)(static_cast<double>(width) / source.Width,
+                static_cast<double>(height) / source.Height);
+            const int iw = (std::max)(1, static_cast<int>(std::lround(source.Width * scale)));
+            const int ih = (std::max)(1, static_cast<int>(std::lround(source.Height * scale)));
+            Gdiplus::Graphics graphics(dc);
+            graphics.SetInterpolationMode(Gdiplus::InterpolationModeHighQualityBicubic);
+            graphics.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHalf);
+            graphics.DrawImage(bitmap, Gdiplus::Rect(x + (width - iw) / 2, y + (height - ih) / 2, iw, ih),
+                source.X, source.Y, source.Width, source.Height, Gdiplus::UnitPixel);
+        }
+    private:
+        ULONG_PTR token{};
+        IStream* stream{};
+        Gdiplus::Bitmap* bitmap{};
+        Gdiplus::Rect source{};
+    };
+
     void DrawRow(HDC dc, const CodexSnapshot& snapshot, bool weekly, int x, int y, int w, int h, bool dark)
     {
         const auto options = CCodexUsagePlugin::Instance().Options();
@@ -898,9 +967,9 @@ namespace
         GetTextExtentPoint32W(dc, L"7d", 2, &long_label);
         const int label_width = (std::max)(short_label.cx, long_label.cx);
         RECT label{ left, y, left + label_width, y + row_height };
-        DrawText(dc, label, weekly ? L"7d" : L"5h", foreground, DT_RIGHT);
+        if (!snapshot.remote_unavailable) DrawText(dc, label, weekly ? L"7d" : L"5h", foreground, DT_RIGHT);
 
-        const int bar_x = label.right + sc(8);
+        const int bar_x = label.right + sc(4);
         const int bar_width = sc(89); // Ten narrow 8px cells with nine 1px gaps.
         const int gap = options.bar_style == 0 ? sc(1) : 0;
         const int segments = options.bar_style == 0 ? 10 : 1;
@@ -1121,6 +1190,7 @@ void CCodexUsagePlugin::PollLoop()
 void CCodexUsagePlugin::RefreshSnapshot()
 {
     CodexSnapshot next;
+    bool usage_ok = false, credits_ok = false;
     // Load beside this DLL, independently of the host's current working directory.
     // The worker refreshes the calendar; painting only reads the cached snapshot.
     HMODULE module{};
@@ -1152,16 +1222,20 @@ void CCodexUsagePlugin::RefreshSnapshot()
         if (HttpGet(kUsagePath, credentials, body) && ParseJson(body, root))
         {
             ParseUsage(root, next, m_is_chinese);
+            usage_ok = next.has_session || next.has_weekly;
             next.status = (next.has_session || next.has_weekly) ? (m_is_chinese ? L"已连接" : L"Connected")
                 : (m_is_chinese ? L"账号未返回额度数据" : L"No quota data returned");
             std::wstring credit_body;
             JsonValue credit_root;
             if (HttpGet(kCreditsPath, credentials, credit_body) && ParseJson(credit_body, credit_root))
             {
+                // A parsed error object is not a successful credit response.
                 const JsonValue* count = credit_root.Get(L"available_count");
                 if (count && count->type == JsonValue::Type::Number)
                     next.reset_credits = static_cast<int>(count->number);
                 const JsonValue* credit_items = credit_root.Get(L"credits");
+                credits_ok = (count && count->type == JsonValue::Type::Number)
+                    || (credit_items && credit_items->type == JsonValue::Type::Array);
                 if (credit_items && credit_items->type == JsonValue::Type::Array)
                 {
                     std::wostringstream details;
@@ -1191,6 +1265,16 @@ void CCodexUsagePlugin::RefreshSnapshot()
             SecureZeroMemory(credentials.access_token.data(), credentials.access_token.size() * sizeof(wchar_t));
     }
 
+    const auto options = Options();
+    next.remote_unavailable = !usage_ok || !credits_ok
+        || (options.show_session && !next.has_session) || (options.show_weekly && !next.has_weekly);
+    const bool using_cache = RestoreCachedRemote(next, m_remote_cache, usage_ok, credits_ok);
+    if (next.remote_unavailable)
+    {
+        if (usage_ok) next.status = m_is_chinese ? L"部分 Codex 信息获取失败" : L"Some Codex information unavailable";
+        if (using_cache) next.status += m_is_chinese ? L"（显示上次缓存）" : L" (showing cached values)";
+    }
+    m_remote_cache = next;
     ScanSessions(next);
     std::wostringstream details;
     if (m_is_chinese)
@@ -1499,7 +1583,7 @@ int CCodexUsageItem::GetItemWidthEx(void* hDC) const
     SIZE short_label{}, long_label{};
     GetTextExtentPoint32W(dc, L"5h", 2, &short_label);
     GetTextExtentPoint32W(dc, L"7d", 2, &long_label);
-    return sc(2 + 8 + 89 + 8 + 8 + columns * 16) + (std::max)(short_label.cx, long_label.cx) + summary_width;
+    return sc(2 + 4 + 89 + 8 + 8 + columns * 16) + (std::max)(short_label.cx, long_label.cx) + summary_width;
 }
 
 void CCodexUsageItem::DrawItem(void* hDC, int x, int y, int w, int h, bool dark_mode)
@@ -1509,6 +1593,13 @@ void CCodexUsageItem::DrawItem(void* hDC, int x, int y, int w, int h, bool dark_
     const auto options = CCodexUsagePlugin::Instance().Options();
     const int row_height = options.show_session && options.show_weekly ? h / 2 : h;
     HDC dc = static_cast<HDC>(hDC);
+    TEXTMETRICW metrics{}; GetTextMetricsW(dc, &metrics);
+    const auto sc = [&](int n) { return MulDiv(n, (std::max)(16L, metrics.tmHeight), 16); };
+    SIZE short_label{}, long_label{};
+    GetTextExtentPoint32W(dc, L"5h", 2, &short_label);
+    GetTextExtentPoint32W(dc, L"7d", 2, &long_label);
+    static OfflineIcon offline_icon;
+    if (snapshot.remote_unavailable) offline_icon.Draw(dc, x + sc(2), y + sc(1), (std::max)(short_label.cx, long_label.cx), (std::max)(1, h - sc(2)));
     if (options.show_session) DrawRow(dc, snapshot, false, x, y, w, row_height, dark_mode);
     if (options.show_weekly) DrawRow(dc, snapshot, true, x, y + (options.show_session ? row_height : 0), w,
         options.show_session ? h - row_height : h, dark_mode);

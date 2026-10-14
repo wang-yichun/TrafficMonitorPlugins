@@ -90,3 +90,7 @@ UI/config regression test: compile `tests/OptionsDialogTests.cpp` in an x64 Visu
 Studio developer prompt with `/std:c++17 /EHsc /UNDEBUG` and link `user32.lib gdi32.lib`.
 Run with the built `CodexUsage.dll` path. It uses a temporary config directory and
 checks cancel, apply, unchanged OK, reload, and single-row continuous drawing.
+
+### Remote data fallback
+
+Failed or incomplete remote refreshes retain the last available quota percentages, original reset timestamps, account fields and reset credits for the current plugin session. Local token totals continue refreshing. A transparent offline icon replaces the 5h/7d labels while information is unavailable; labels return after recovery. The icon uses the original measured label width, ignores transparent margins and keeps its aspect ratio. Tooltip status indicates cached values. Before the first successful request there is no cached quota; cache is held in memory and does not survive restarting the host.
