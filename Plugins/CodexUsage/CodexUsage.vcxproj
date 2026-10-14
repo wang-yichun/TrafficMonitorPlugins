@@ -65,6 +65,7 @@
     <ClInclude Include="CodexUsagePlugin.h" />
     <ClInclude Include="JsonValue.h" />
     <ClInclude Include="RemoteSnapshotCache.h" />
+    <ClInclude Include="RecentUsage.h" />
     <ClInclude Include="TimeBarMarkers.h" />
     <ClInclude Include="WorkdayCalendar.h" />
   </ItemGroup>

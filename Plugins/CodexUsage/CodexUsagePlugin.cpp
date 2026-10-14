@@ -962,6 +962,8 @@ namespace
                 ? (dark ? RGB(253, 214, 99) : RGB(227, 116, 0))
                 : (dark ? RGB(129, 201, 149) : RGB(24, 128, 56));
         const COLORREF empty = dark ? RGB(82, 91, 101) : RGB(194, 202, 211);
+        const COLORREF recent_color = dark ? RGB(101, 110, 120) : RGB(174, 183, 193);
+        const double recent = weekly ? snapshot.weekly_recent : snapshot.session_recent;
         SIZE short_label{}, long_label{};
         GetTextExtentPoint32W(dc, L"5h", 2, &short_label);
         GetTextExtentPoint32W(dc, L"7d", 2, &long_label);
@@ -974,7 +976,6 @@ namespace
         const int gap = options.bar_style == 0 ? sc(1) : 0;
         const int segments = options.bar_style == 0 ? 10 : 1;
         const int segment_width = (bar_width - (segments - 1) * gap) / segments;
-        const double filled_segments = remaining * segments / 100.0;
         const int time_gap = 1;
         const int time_height = (std::max)(1, sc(2));
         const int row_gap = (std::max)(3, sc(3));
@@ -989,7 +990,16 @@ namespace
             FillRect(dc, &bar, brush);
             DeleteObject(brush);
             // Each cell represents 10%. As quota is used, its colored fill recedes from top to bottom.
-            const double covered = available ? std::clamp(filled_segments - i, 0.0, 1.0) : 0.0;
+            const double recent_covered = available ? CodexRecent::Coverage(
+                (std::min)(100.0, remaining + recent), segments, i) : 0.0;
+            const int recent_height = static_cast<int>(std::lround(bar_height * recent_covered));
+            RECT recent_fill = options.bar_style == 0
+                ? RECT{bar.left, bar.bottom - recent_height, bar.right, bar.bottom}
+                : RECT{bar.left, bar.top, bar.left + static_cast<int>(std::lround(segment_width * recent_covered)), bar.bottom};
+            brush = CreateSolidBrush(recent_color);
+            FillRect(dc, &recent_fill, brush);
+            DeleteObject(brush);
+            const double covered = available ? CodexRecent::Coverage(remaining, segments, i) : 0.0;
             const int fill_height = static_cast<int>(std::lround(bar_height * covered));
             if (fill_height > 0)
             {
@@ -1133,8 +1143,7 @@ void CCodexUsagePlugin::OnInitialize(ITrafficMonitor* app)
         m_config_path = (std::filesystem::path(app->GetPluginConfigDir()) / L"CodexUsage.ini").wstring();
         auto read = [&](const wchar_t* key, int fallback) { return static_cast<int>(GetPrivateProfileIntW(L"Options", key, fallback, m_config_path.c_str())); };
         CodexOptions options;
-        options.poll_seconds = read(L"PollSeconds", 60);
-        if (options.poll_seconds != 60 && options.poll_seconds != 300 && options.poll_seconds != 900 && options.poll_seconds != 3600) options.poll_seconds = 60;
+        options.poll_seconds = 60;
         options.theme = (std::clamp)(read(L"Theme", 0), 0, 2);
         options.bar_style = (std::clamp)(read(L"BarStyle", 0), 0, 1);
         options.text_style = (std::clamp)(read(L"TextStyle", 0), 0, 1);
@@ -1178,9 +1187,10 @@ void CCodexUsagePlugin::PollLoop()
 {
     while (!m_stop.load())
     {
+        const auto next_poll = std::chrono::steady_clock::now() + std::chrono::seconds(60);
         RefreshSnapshot();
         std::unique_lock<std::mutex> lock(m_worker_mutex);
-        m_worker_cv.wait_for(lock, std::chrono::seconds(Options().poll_seconds), [this] {
+        m_worker_cv.wait_until(lock, next_poll, [this] {
             return m_stop.load() || m_refresh_requested.exchange(false);
         });
         if (m_stop.load()) break;
@@ -1211,18 +1221,61 @@ void CCodexUsagePlugin::RefreshSnapshot()
         }
     }
     Credentials credentials;
+    const long long sampled_at = static_cast<long long>(time(nullptr));
+    const auto history_path = m_config_path.empty() ? std::filesystem::path{}
+        : std::filesystem::path(m_config_path).parent_path() / L"CodexUsage.history";
     if (!ReadCredentials(credentials))
     {
         next.status = m_is_chinese ? L"未找到 Codex 登录凭据" : L"Codex sign-in credentials not found";
     }
     else
     {
+        // Store an account discriminator, never authentication tokens or raw credentials.
+        unsigned long long account_hash = 14695981039346656037ULL;
+        for (wchar_t ch : credentials.account_id)
+        { account_hash ^= static_cast<unsigned long long>(ch); account_hash *= 1099511628211ULL; }
+        const std::string account = std::to_string(account_hash);
+        if (m_history_account != account)
+        {
+            m_history_account = account;
+            m_session_history = {}; m_weekly_history = {};
+            m_remote_cache = {};
+            if (!history_path.empty())
+            {
+                std::ifstream saved(history_path);
+                std::string version, saved_account;
+                CodexRecent::Window session, weekly;
+                if ((saved >> version >> saved_account) && saved_account == account)
+                {
+                    const bool loaded = version == "v2" ? session.Read(saved) && weekly.Read(saved)
+                        : version == "v1" && session.ReadLegacy(saved, 5 * 3600) && weekly.ReadLegacy(saved, 7 * 86400);
+                    if (loaded) { m_session_history = session; m_weekly_history = weekly; }
+                }
+            }
+        }
         std::wstring body;
         JsonValue root;
         if (HttpGet(kUsagePath, credentials, body) && ParseJson(body, root))
         {
             ParseUsage(root, next, m_is_chinese);
             usage_ok = next.has_session || next.has_weekly;
+            if (next.has_session) m_session_history.Record(sampled_at, next.session_used, next.session_reset, 5 * 3600);
+            if (next.has_weekly) m_weekly_history.Record(sampled_at, next.weekly_used, next.weekly_reset, 7 * 86400);
+            m_session_history.Prune(sampled_at);
+            m_weekly_history.Prune(sampled_at);
+            if (usage_ok && !history_path.empty())
+            {
+                std::error_code error;
+                std::filesystem::create_directories(history_path.parent_path(), error);
+                const auto temporary = std::filesystem::path(history_path.wstring() + L".tmp");
+                std::ofstream saved(temporary, std::ios::trunc);
+                saved << "v2 " << m_history_account << '\n' << std::setprecision(17);
+                m_session_history.Write(saved); m_weekly_history.Write(saved);
+                saved.flush();
+                const bool written = static_cast<bool>(saved);
+                saved.close();
+                if (written) MoveFileExW(temporary.c_str(), history_path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH);
+            }
             next.status = (next.has_session || next.has_weekly) ? (m_is_chinese ? L"已连接" : L"Connected")
                 : (m_is_chinese ? L"账号未返回额度数据" : L"No quota data returned");
             std::wstring credit_body;
@@ -1274,6 +1327,11 @@ void CCodexUsagePlugin::RefreshSnapshot()
         if (usage_ok) next.status = m_is_chinese ? L"部分 Codex 信息获取失败" : L"Some Codex information unavailable";
         if (using_cache) next.status += m_is_chinese ? L"（显示上次缓存）" : L" (showing cached values)";
     }
+    // Retention also runs on failed requests; it never creates quota samples.
+    m_session_history.Prune(sampled_at);
+    m_weekly_history.Prune(sampled_at);
+    next.session_recent = m_session_history.Recent(sampled_at, 3600);
+    next.weekly_recent = m_weekly_history.Recent(sampled_at, 86400);
     m_remote_cache = next;
     ScanSessions(next);
     std::wostringstream details;
@@ -1422,9 +1480,9 @@ namespace
                 for (const auto label : labels) SendDlgItemMessageW(dialog, id, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(label));
                 SendDlgItemMessageW(dialog, id, CB_SETCURSEL, selected, 0);
             };
-            combo(IDC_POLL, chinese ? std::initializer_list<const wchar_t*>{L"1 分钟", L"5 分钟", L"15 分钟", L"1 小时"}
-                : std::initializer_list<const wchar_t*>{L"1 minute", L"5 minutes", L"15 minutes", L"1 hour"},
-                options.poll_seconds == 300 ? 1 : options.poll_seconds == 900 ? 2 : options.poll_seconds == 3600 ? 3 : 0);
+            combo(IDC_POLL, chinese ? std::initializer_list<const wchar_t*>{L"1 分钟（固定）"}
+                : std::initializer_list<const wchar_t*>{L"1 minute (fixed)"}, 0);
+            EnableWindow(GetDlgItem(dialog, IDC_POLL), FALSE);
             combo(IDC_THEME, chinese ? std::initializer_list<const wchar_t*>{L"跟随 TrafficMonitor", L"浅色", L"深色"}
                 : std::initializer_list<const wchar_t*>{L"Follow TrafficMonitor", L"Light", L"Dark"}, options.theme);
             combo(IDC_BAR, chinese ? std::initializer_list<const wchar_t*>{L"分段", L"连续"}
@@ -1481,8 +1539,7 @@ namespace
             if (LOWORD(wp) == IDOK)
             {
                 auto options = CCodexUsagePlugin::Instance().Options();
-                const int intervals[] = {60, 300, 900, 3600};
-                options.poll_seconds = intervals[(std::clamp)(static_cast<int>(SendDlgItemMessageW(dialog, IDC_POLL, CB_GETCURSEL, 0, 0)), 0, 3)];
+                options.poll_seconds = 60;
                 options.theme = static_cast<int>(SendDlgItemMessageW(dialog, IDC_THEME, CB_GETCURSEL, 0, 0));
                 options.bar_style = static_cast<int>(SendDlgItemMessageW(dialog, IDC_BAR, CB_GETCURSEL, 0, 0));
                 options.text_style = static_cast<int>(SendDlgItemMessageW(dialog, IDC_TEXT, CB_GETCURSEL, 0, 0));

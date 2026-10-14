@@ -2,6 +2,7 @@
 
 #include "PluginInterface.h"
 #include "WorkdayCalendar.h"
+#include "RecentUsage.h"
 
 #include <atomic>
 #include <condition_variable>
@@ -34,6 +35,8 @@ struct CodexSnapshot
     bool has_weekly{};
     double session_used{};
     double weekly_used{};
+    double session_recent{};
+    double weekly_recent{};
     long long session_reset{};
     long long weekly_reset{};
     int reset_credits{-1};
@@ -97,6 +100,8 @@ private:
     mutable std::mutex m_options_mutex;
     CodexOptions m_options;
     std::wstring m_config_path;
+    std::string m_history_account;
+    CodexRecent::Window m_session_history, m_weekly_history;
     CCodexUsageItem m_item;
     ITrafficMonitor* m_app{};
     bool m_is_chinese{ true };

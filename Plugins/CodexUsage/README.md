@@ -71,7 +71,7 @@ The current local runtime is `D:\Projects\TrafficMonitor\TrafficMonitor.exe`, wi
 Open TrafficMonitor's plugin manager, select Codex Usage, and choose plugin options.
 The dialog follows the host's Chinese or English language and supports:
 
-- Refresh after 1, 5, or 15 minutes, or 1 hour (default: 1 minute).
+- Quota sampling is fixed at one minute; the refresh control shows this fixed interval.
 - Follow the host theme, or use light/dark quota text and bar colors.
 - Segmented or continuous quota bars; compact or detailed quota text.
 - Show the 5-hour and/or 7-day quota (at least one must remain visible).
@@ -83,8 +83,44 @@ Defaults preserve the existing display. Settings apply on OK and persist in
 settings unchanged. A save failure keeps the dialog open and reports the error.
 Position/background remain host settings. These display switches affect the host
 item; the detail popup retains complete account, quota and token information.
-Changing settings requests an immediate refresh. Poll intervals are waits after
-each refresh, as in the existing plugin.
+Changing settings requests an immediate refresh. Scheduled samples start one minute
+apart (network delays can extend this); manual refreshes in the same minute update
+the existing sample. Failed requests never create samples from cached values.
+
+## Recent quota consumption
+
+The 5h row shows the last rolling hour of consumption, and the 7d row shows the
+last rolling 24 hours. A subtle gray fill extends the remaining-quota fill into
+the empty cells, using the same vertical partial-cell behavior; continuous bars
+use horizontal fill. Light mode uses a slightly darker gray than empty cells;
+dark mode uses a slightly lighter gray for visibility.
+
+Each successful quota response is a meter reading (time, cumulative percentage,
+and reset boundary). The difference from the previous reading is spread uniformly
+across the intervening minute buckets, including gaps caused by failed requests.
+The 5h display sums the last rolling 60 minutes and the 7d display sums the last
+rolling 24 hours. Failed requests never fabricate meter readings. Timestamp shifts
+alone never reset statistics.
+
+If an interval crosses the previous expiry, or the used percentage drops by more
+than half a percentage point, the window starts a new cycle. The current reading
+is allocated only after that cycle's start. The reported reset minus the window
+length supplies the start when it lies between readings; otherwise a known expiry
+is used, or an early manual reset is estimated at the current reading. Queries
+exclude older cycles, while their buckets remain until the independent retention
+pass removes records older than seven days. Each window is processed independently.
+First installation establishes a baseline without guessing earlier consumption.
+The approximation cannot recover consumption in cycles missed entirely while offline.
+
+`CodexUsage.history` beside `CodexUsage.ini` preserves minute consumption, the latest
+meter reading and cycle information across restarts. The v2 reader migrates existing
+v1 snapshots by interpolating their differences, including repairing the old false
+zero baseline. It also stores a hashed account discriminator, never login tokens.
+Switching accounts starts separate fresh tracking. Writes replace the file through
+a temporary file; if saving is unavailable, in-memory tracking continues.
+
+Statistics regression test: compile `tests/RecentUsageTests.cpp` with
+`/std:c++17 /EHsc /I Plugins/CodexUsage` and run the resulting executable.
 
 UI/config regression test: compile `tests/OptionsDialogTests.cpp` in an x64 Visual
 Studio developer prompt with `/std:c++17 /EHsc /UNDEBUG` and link `user32.lib gdi32.lib`.

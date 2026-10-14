@@ -52,16 +52,16 @@ int wmain(int argc, wchar_t** argv)
             }
             assert(window);
             // Synchronous UI messages wait until WM_INITDIALOG has completed.
-            assert(SendDlgItemMessageW(window, IDC_POLL, CB_GETCOUNT, 0, 0) == 4);
+            assert(SendDlgItemMessageW(window, IDC_POLL, CB_GETCOUNT, 0, 0) == 1);
+            assert(!IsWindowEnabled(GetDlgItem(window, IDC_POLL)));
             if (scenario == 3)
             {
-                assert(SendDlgItemMessageW(window, IDC_POLL, CB_GETCURSEL, 0, 0) == 2);
+                assert(SendDlgItemMessageW(window, IDC_POLL, CB_GETCURSEL, 0, 0) == 0);
                 assert(SendDlgItemMessageW(window, IDC_THEME, CB_GETCURSEL, 0, 0) == 2);
                 assert(SendDlgItemMessageW(window, IDC_WEEKLY, BM_GETCHECK, 0, 0) == BST_UNCHECKED);
             }
             if (scenario <= 1)
             {
-                SendDlgItemMessageW(window, IDC_POLL, CB_SETCURSEL, 2, 0);
                 SendDlgItemMessageW(window, IDC_THEME, CB_SETCURSEL, 2, 0);
                 SendDlgItemMessageW(window, IDC_BAR, CB_SETCURSEL, 1, 0);
                 SendDlgItemMessageW(window, IDC_TEXT, CB_SETCURSEL, 1, 0);
@@ -77,7 +77,7 @@ int wmain(int argc, wchar_t** argv)
     assert(dialog(0) == ITMPlugin::OR_OPTION_UNCHANGED);
     assert(!std::filesystem::exists(config));
     assert(dialog(1) == ITMPlugin::OR_OPTION_CHANGED);
-    assert(GetPrivateProfileIntW(L"Options", L"PollSeconds", 0, config.c_str()) == 900);
+    assert(GetPrivateProfileIntW(L"Options", L"PollSeconds", 0, config.c_str()) == 60);
     assert(GetPrivateProfileIntW(L"Options", L"ShowWeekly", 1, config.c_str()) == 0);
     assert(dialog(2) == ITMPlugin::OR_OPTION_UNCHANGED);
     plugin->OnInitialize(&host);
