@@ -534,7 +534,11 @@ namespace
         const long long hours = remaining / 3600;
         const long long minutes = (remaining % 3600) / 60;
         if (remaining < 3600)
-            return std::to_wstring(remaining / 60) + L"m" + std::to_wstring(remaining % 60) + L"s";
+        {
+            std::wostringstream out;
+            out << (remaining / 60) << L'\'' << std::setw(2) << std::setfill(L'0') << (remaining % 60) << L'"';
+            return out.str();
+        }
         if (weekly && remaining < 86400)
             return std::to_wstring(hours) + L"h" + std::to_wstring(minutes) + L"m";
         if (hours >= 24)
