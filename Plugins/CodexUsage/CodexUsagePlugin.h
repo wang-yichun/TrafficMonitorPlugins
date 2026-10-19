@@ -22,6 +22,8 @@ struct CodexOptions
     int weekly_bar_mode{}; // 10 cells, 7 cells, 14 compact, 14 full
     bool show_cards{true};
     bool show_time_bar{true};
+    bool show_expiry_warning{};
+    long long expiry_timestamp{}; // Local date/time converted to Unix seconds.
     int rest_schedule{}; // 0: Sat/Sun off, 1: Sun off, 2/3: alternating ISO weeks
     int morning_start{9 * 60 + 30};
     int morning_end{12 * 60};
@@ -42,6 +44,7 @@ struct CodexSnapshot
     long long weekly_reset{};
     int reset_credits{-1};
     std::vector<long long> reset_credit_expiries;
+    std::vector<long long> all_reset_credit_expiries;
     std::vector<std::pair<std::wstring, std::wstring>> account_rows;
     std::wstring status{ L"等待 Codex 数据" };
     std::wstring account_details;

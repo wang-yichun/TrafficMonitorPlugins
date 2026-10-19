@@ -1071,6 +1071,22 @@ namespace
             const CodexTimeBar::Schedule schedule{ options.rest_schedule, options.morning_start, options.morning_end,
                 options.afternoon_start, options.afternoon_end };
             const auto markers = CodexTimeBar::MarkerPixels(now, reset, weekly, drawn_width, snapshot.calendar, 0, schedule);
+            const bool expiry_enabled = options.show_expiry_warning && options.expiry_timestamp > 0;
+            const COLORREF expiry_work = dark ? RGB(151, 108, 55) : RGB(201, 145, 73);
+            const COLORREF expiry_rest = dark ? RGB(168, 139, 66) : RGB(220, 184, 91);
+            const COLORREF credit_work = dark ? RGB(105, 151, 196) : RGB(88, 151, 209);
+            const COLORREF credit_rest = dark ? RGB(142, 179, 212) : RGB(155, 194, 226);
+            HBRUSH expiry_work_brush = expiry_enabled ? CreateSolidBrush(expiry_work) : nullptr;
+            HBRUSH expiry_rest_brush = expiry_enabled ? CreateSolidBrush(expiry_rest) : nullptr;
+            HBRUSH credit_work_brush = snapshot.all_reset_credit_expiries.empty() ? nullptr : CreateSolidBrush(credit_work);
+            HBRUSH credit_rest_brush = snapshot.all_reset_credit_expiries.empty() ? nullptr : CreateSolidBrush(credit_rest);
+            long long next_credit_expiry = 0;
+            for (const long long card_expiry : snapshot.all_reset_credit_expiries)
+            {
+                if (card_expiry > now && (next_credit_expiry == 0 || card_expiry < next_credit_expiry))
+                    next_credit_expiry = card_expiry;
+            }
+            const bool credit_expiry_in_cycle = next_credit_expiry > now && next_credit_expiry <= reset;
             // Leave gaps unpainted so the host's existing background remains visible.
             for (int pixel = 0; pixel < time_bar.right - time_bar.left; ++pixel)
             {
@@ -1078,8 +1094,19 @@ namespace
                 // Match the reverse time direction of the shrinking bar; sample each pixel's center.
                 const long long timestamp = (std::max)(now, reset - static_cast<long long>((pixel + 0.5) * duration / drawn_width));
                 RECT section{ bar_x + pixel, time_bar.top, bar_x + pixel + 1, time_bar.bottom };
-                FillRect(dc, &section, CodexTimeBar::IsWorkingTime(timestamp, weekly, snapshot.calendar, schedule) ? work_brush : rest_brush);
+                const bool working_time = CodexTimeBar::IsWorkingTime(timestamp, weekly, snapshot.calendar, schedule);
+                const bool after_expiry = expiry_enabled && timestamp >= options.expiry_timestamp;
+                const bool after_credit_expiry = credit_expiry_in_cycle && timestamp >= next_credit_expiry;
+                if (after_credit_expiry)
+                    FillRect(dc, &section, working_time ? credit_work_brush : credit_rest_brush);
+                else if (after_expiry)
+                    FillRect(dc, &section, working_time ? expiry_work_brush : expiry_rest_brush);
+                else FillRect(dc, &section, working_time ? work_brush : rest_brush);
             }
+            if (expiry_work_brush) DeleteObject(expiry_work_brush);
+            if (expiry_rest_brush) DeleteObject(expiry_rest_brush);
+            if (credit_work_brush) DeleteObject(credit_work_brush);
+            if (credit_rest_brush) DeleteObject(credit_rest_brush);
             DeleteObject(work_brush);
             DeleteObject(rest_brush);
         }
@@ -1101,7 +1128,13 @@ namespace
             RECT badge{ bx, y + (row_height - card_size) / 2, bx + card_size, y + (row_height - card_size) / 2 + card_size };
             const long long expiry = static_cast<size_t>(i) < snapshot.reset_credit_expiries.size() ? snapshot.reset_credit_expiries[i] : 0;
             const long long seconds = expiry - static_cast<long long>(time(nullptr));
-            const COLORREF color = expiry > 0 && seconds < 3600 ? RGB(198, 40, 40) : expiry > 0 && seconds < 86400 ? RGB(196, 95, 0) : foreground;
+            COLORREF color = foreground;
+            if (expiry > 0)
+            {
+                if (seconds < 3600) color = RGB(198, 40, 40);
+                else if (seconds < 86400) color = RGB(196, 95, 0);
+                else if (seconds < 7LL * 86400) color = dark ? RGB(105, 151, 196) : RGB(88, 151, 209);
+            }
             HBRUSH border = CreateSolidBrush(color);
             FrameRect(dc, &badge, border);
             DeleteObject(border);
@@ -1203,6 +1236,12 @@ void CCodexUsagePlugin::OnInitialize(ITrafficMonitor* app)
             : (read(L"Weekly7Cells", 0) != 0 ? 1 : (read(L"Weekly14Cells", 0) != 0 ? 2 : 0));
         options.show_cards = read(L"ShowCards", 1) != 0;
         options.show_time_bar = read(L"ShowTimeBar", 1) != 0;
+        options.show_expiry_warning = read(L"ShowExpiryWarning", 0) != 0;
+        wchar_t expiry_value[64]{};
+        GetPrivateProfileStringW(L"Options", L"ExpiryTimestamp", L"0", expiry_value,
+            static_cast<DWORD>(std::size(expiry_value)), m_config_path.c_str());
+        options.expiry_timestamp = _wtoi64(expiry_value);
+        if (options.expiry_timestamp < 0) options.expiry_timestamp = 0;
         options.rest_schedule = (std::clamp)(read(L"RestSchedule", 0), 0, 3);
         const auto valid_minute = [](int minute) { return minute >= 0 && minute < 24 * 60; };
         options.morning_start = read(L"MorningStart", 9 * 60 + 30);
@@ -1351,14 +1390,21 @@ void CCodexUsagePlugin::RefreshSnapshot()
                         const JsonValue* status = item.Get(L"status");
                         if (status && status->String() != L"available") continue;
                         const JsonValue* expires = item.Get(L"expires_at");
-                        next.reset_credit_expiries.push_back(CreditExpiry(expires));
-                        details << L"  " << (expires ? expires->String(m_is_chinese ? L"未知" : L"expiry unknown") : (m_is_chinese ? L"未知" : L"expiry unknown")) << L"\r\n";
-                        if (++shown >= 8) break;
+                        const long long expiry = CreditExpiry(expires);
+                        next.all_reset_credit_expiries.push_back(expiry);
+                        if (shown < 8)
+                        {
+                            next.reset_credit_expiries.push_back(expiry);
+                            details << L"  " << (expires ? expires->String(m_is_chinese ? L"未知" : L"expiry unknown") : (m_is_chinese ? L"未知" : L"expiry unknown")) << L"\r\n";
+                            ++shown;
+                        }
                     }
                     next.account_details = details.str();
-                    std::sort(next.reset_credit_expiries.begin(), next.reset_credit_expiries.end(), [](long long a, long long b) {
+                    const auto by_expiry = [](long long a, long long b) {
                         return a != 0 && (b == 0 || a < b);
-                    });
+                    };
+                    std::sort(next.reset_credit_expiries.begin(), next.reset_credit_expiries.end(), by_expiry);
+                    std::sort(next.all_reset_credit_expiries.begin(), next.all_reset_credit_expiries.end(), by_expiry);
                 }
             }
         }
@@ -1494,6 +1540,9 @@ namespace
         add(L"WeeklyBarMode", options.weekly_bar_mode);
         add(L"ShowCards", options.show_cards);
         add(L"ShowTimeBar", options.show_time_bar);
+        add(L"ShowExpiryWarning", options.show_expiry_warning);
+        section += L"ExpiryTimestamp=" + std::to_wstring(options.expiry_timestamp);
+        section.push_back(L'\0');
         add(L"RestSchedule", options.rest_schedule);
         add(L"MorningStart", options.morning_start);
         add(L"MorningEnd", options.morning_end);
@@ -1523,6 +1572,52 @@ namespace
         return true;
     }
 
+    std::wstring FormatLocalDateTime(long long timestamp)
+    {
+        if (timestamp <= 0) return {};
+        const std::time_t value = static_cast<std::time_t>(timestamp);
+        std::tm local{};
+        if (localtime_s(&local, &value) != 0) return {};
+        wchar_t text[20]{};
+        swprintf_s(text, L"%04d-%02d-%02d %02d:%02d:%02d", local.tm_year + 1900,
+            local.tm_mon + 1, local.tm_mday, local.tm_hour, local.tm_min, local.tm_sec);
+        return text;
+    }
+
+    bool ParseLocalDateTime(HWND dialog, int id, long long& timestamp)
+    {
+        wchar_t text[32]{};
+        GetDlgItemTextW(dialog, id, text, static_cast<int>(std::size(text)));
+        if (wcslen(text) != 19 || text[4] != L'-' || text[7] != L'-' || text[10] != L' ' ||
+            text[13] != L':' || text[16] != L':') return false;
+        for (int i = 0; i < 19; ++i)
+            if (i != 4 && i != 7 && i != 10 && i != 13 && i != 16 && (text[i] < L'0' || text[i] > L'9')) return false;
+        const auto number = [&](int start, int count) {
+            int value = 0;
+            for (int i = start; i < start + count; ++i) value = value * 10 + text[i] - L'0';
+            return value;
+        };
+        std::tm local{};
+        local.tm_year = number(0, 4) - 1900;
+        local.tm_mon = number(5, 2) - 1;
+        local.tm_mday = number(8, 2);
+        local.tm_hour = number(11, 2);
+        local.tm_min = number(14, 2);
+        local.tm_sec = number(17, 2);
+        if (local.tm_year < 70 || local.tm_mon < 0 || local.tm_mon > 11 || local.tm_mday < 1 || local.tm_mday > 31 ||
+            local.tm_hour > 23 || local.tm_min > 59 || local.tm_sec > 59) return false;
+        local.tm_isdst = -1;
+        const __time64_t parsed = _mktime64(&local);
+        if (parsed < 0) return false;
+        std::tm roundtrip{};
+        const std::time_t value = static_cast<std::time_t>(parsed);
+        if (localtime_s(&roundtrip, &value) != 0 || roundtrip.tm_year != number(0, 4) - 1900 ||
+            roundtrip.tm_mon != number(5, 2) - 1 || roundtrip.tm_mday != number(8, 2) ||
+            roundtrip.tm_hour != number(11, 2) || roundtrip.tm_min != number(14, 2) || roundtrip.tm_sec != number(17, 2)) return false;
+        timestamp = static_cast<long long>(parsed);
+        return true;
+    }
+
     INT_PTR CALLBACK OptionsDialogProc(HWND dialog, UINT message, WPARAM wp, LPARAM)
     {
         const bool chinese = CCodexUsagePlugin::Instance().IsChinese();
@@ -1549,6 +1644,9 @@ namespace
             SetDlgItemTextW(dialog, IDC_MORNING_END, FormatClock(options.morning_end).c_str());
             SetDlgItemTextW(dialog, IDC_AFTERNOON_START, FormatClock(options.afternoon_start).c_str());
             SetDlgItemTextW(dialog, IDC_AFTERNOON_END, FormatClock(options.afternoon_end).c_str());
+            SetDlgItemTextW(dialog, IDC_EXPIRY_TIME, FormatLocalDateTime(options.expiry_timestamp).c_str());
+            SendDlgItemMessageW(dialog, IDC_EXPIRY_TIME, EM_SETCUEBANNER, TRUE,
+                reinterpret_cast<LPARAM>(chinese ? L"YYYY-MM-DD HH:mm:ss（本地时间）" : L"YYYY-MM-DD HH:mm:ss (local time)"));
             CheckDlgButton(dialog, IDC_SESSION, options.show_session ? BST_CHECKED : BST_UNCHECKED);
             CheckDlgButton(dialog, IDC_WEEKLY, options.show_weekly ? BST_CHECKED : BST_UNCHECKED);
             combo(IDC_WEEKLY_BAR_MODE, chinese
@@ -1556,6 +1654,9 @@ namespace
                 : std::initializer_list<const wchar_t*>{L"10 cells (default)", L"7 cells (1/day)", L"14 cells (compact)", L"14 cells (full)"}, options.weekly_bar_mode);
             CheckDlgButton(dialog, IDC_CARDS, options.show_cards ? BST_CHECKED : BST_UNCHECKED);
             CheckDlgButton(dialog, IDC_TIME_BAR, options.show_time_bar ? BST_CHECKED : BST_UNCHECKED);
+            CheckDlgButton(dialog, IDC_EXPIRY_WARNING, options.show_expiry_warning ? BST_CHECKED : BST_UNCHECKED);
+            EnableWindow(GetDlgItem(dialog, IDC_EXPIRY_WARNING), options.show_time_bar);
+            EnableWindow(GetDlgItem(dialog, IDC_EXPIRY_TIME), options.show_time_bar && options.show_expiry_warning);
             EnableWindow(GetDlgItem(dialog, IDC_WEEKLY_BAR_MODE),
                 options.show_weekly && options.bar_style == 0);
             if (chinese)
@@ -1566,6 +1667,7 @@ namespace
                     {IDC_TEXT_LABEL, L"文字样式"}, {IDC_SESSION, L"显示 5 小时额度"}, {IDC_WEEKLY, L"显示 7 天额度"},
                     {IDC_WEEKLY_BAR_LABEL, L"7 天进度条"},
                     {IDC_CARDS, L"显示重置卡片"}, {IDC_TIME_BAR, L"显示时间进度条"},
+                    {IDC_EXPIRY_WARNING, L"启用过期提示"},
                     {IDC_SCHEDULE_LABEL, L"每周休息安排"}, {IDC_MORNING_LABEL, L"上午时段"},
                     {IDC_AFTERNOON_LABEL, L"下午时段"}, {IDC_MORNING_TO, L"至"}, {IDC_AFTERNOON_TO, L"至"},
                     {IDC_HINT, L"窗口位置和背景由 TrafficMonitor 控制。至少保留一个额度窗口。"},
@@ -1600,6 +1702,16 @@ namespace
                 for (int id : { IDC_SCHEDULE_LABEL, IDC_REST_SCHEDULE, IDC_MORNING_LABEL, IDC_MORNING_START,
                     IDC_MORNING_TO, IDC_MORNING_END, IDC_AFTERNOON_LABEL, IDC_AFTERNOON_START, IDC_AFTERNOON_TO, IDC_AFTERNOON_END })
                     EnableWindow(GetDlgItem(dialog, id), enabled);
+                const bool expiry_enabled = IsDlgButtonChecked(dialog, IDC_EXPIRY_WARNING) == BST_CHECKED;
+                EnableWindow(GetDlgItem(dialog, IDC_EXPIRY_WARNING), enabled);
+                EnableWindow(GetDlgItem(dialog, IDC_EXPIRY_TIME), enabled && expiry_enabled);
+                return TRUE;
+            }
+            if (LOWORD(wp) == IDC_EXPIRY_WARNING && HIWORD(wp) == BN_CLICKED)
+            {
+                const bool enabled = IsDlgButtonChecked(dialog, IDC_TIME_BAR) == BST_CHECKED &&
+                    IsDlgButtonChecked(dialog, IDC_EXPIRY_WARNING) == BST_CHECKED;
+                EnableWindow(GetDlgItem(dialog, IDC_EXPIRY_TIME), enabled);
                 return TRUE;
             }
             if (LOWORD(wp) == IDCANCEL) { EndDialog(dialog, IDCANCEL); return TRUE; }
@@ -1616,6 +1728,12 @@ namespace
                 if (options.weekly_bar_mode < 0 || options.weekly_bar_mode > 3) options.weekly_bar_mode = 0;
                 options.show_cards = IsDlgButtonChecked(dialog, IDC_CARDS) == BST_CHECKED;
                 options.show_time_bar = IsDlgButtonChecked(dialog, IDC_TIME_BAR) == BST_CHECKED;
+                options.show_expiry_warning = IsDlgButtonChecked(dialog, IDC_EXPIRY_WARNING) == BST_CHECKED;
+                if (options.show_expiry_warning && !ParseLocalDateTime(dialog, IDC_EXPIRY_TIME, options.expiry_timestamp))
+                {
+                    MessageBoxW(dialog, chinese ? L"请输入有效时间，格式为 YYYY-MM-DD HH:mm:ss（本地时间）。" : L"Enter a valid local time in YYYY-MM-DD HH:mm:ss format.", L"Codex Usage", MB_OK | MB_ICONINFORMATION);
+                    return TRUE;
+                }
                 options.rest_schedule = static_cast<int>(SendDlgItemMessageW(dialog, IDC_REST_SCHEDULE, CB_GETCURSEL, 0, 0));
                 if (options.rest_schedule < 0 || options.rest_schedule > 3 ||
                     !ParseClock(dialog, IDC_MORNING_START, options.morning_start) ||
