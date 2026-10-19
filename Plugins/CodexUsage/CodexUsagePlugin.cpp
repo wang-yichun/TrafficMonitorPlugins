@@ -976,10 +976,54 @@ namespace
         if (!snapshot.remote_unavailable) DrawText(dc, label, weekly ? L"7d" : L"5h", foreground, DT_RIGHT);
 
         const int bar_x = label.right + sc(4);
-        const int bar_width = sc(89); // Ten narrow 8px cells with nine 1px gaps.
-        const int gap = options.bar_style == 0 ? sc(1) : 0;
-        const int segments = options.bar_style == 0 ? 10 : 1;
-        const int segment_width = (bar_width - (segments - 1) * gap) / segments;
+        int bar_width = sc(89);
+        const int session_gap = options.weekly_bar_mode == 3 ? 3 :
+            (options.weekly_bar_mode == 2 ? 1 : (std::max)(1, sc(1)));
+        const int weekly_gap = options.weekly_bar_mode >= 2 ? 1 : (std::max)(2, session_gap);
+        if (options.bar_style == 0)
+        {
+            // Find a shared physical-pixel width that divides evenly into both rows.
+            // The compact and full 14-cell modes use fixed integer-pixel gaps.
+            if (options.weekly_bar_mode >= 2)
+            {
+                const int weekly_cells = 14;
+                for (int candidate = sc(89); candidate <= sc(89) + 1000; ++candidate)
+                {
+                    if ((candidate - 9 * session_gap) % 10 == 0 &&
+                        (candidate - (weekly_cells - 1) * weekly_gap) % weekly_cells == 0)
+                    {
+                        bar_width = candidate;
+                        break;
+                    }
+                }
+            }
+            else
+            {
+                // Keep the existing 10/7-cell layout aligned with identical gaps.
+                for (int delta = 0; delta <= 35; ++delta)
+                {
+                    const int candidates[] = { sc(89) + delta, sc(89) - delta };
+                    bool found = false;
+                    for (const int candidate : candidates)
+                    {
+                        if (candidate <= 0 ||
+                            (candidate - 9 * session_gap) % 10 != 0 ||
+                            (candidate - 6 * weekly_gap) % 7 != 0)
+                            continue;
+                        bar_width = candidate;
+                        found = true;
+                        break;
+                    }
+                    if (found) break;
+                }
+            }
+        }
+        const int gap = options.bar_style == 0 ? (weekly ? weekly_gap : session_gap) : 0;
+        const int segments = options.bar_style == 0
+            ? (weekly ? (options.weekly_bar_mode == 1 ? 7 : options.weekly_bar_mode >= 2 ? 14 : 10) : 10)
+            : 1;
+        const int segment_content_width = bar_width - (segments - 1) * gap;
+        const int segment_width = segment_content_width / segments;
         const int time_gap = 1;
         const int time_height = (std::max)(1, sc(2));
         const int row_gap = (std::max)(3, sc(3));
@@ -988,8 +1032,8 @@ namespace
         const int top = y + vertical_offset + (std::max)(0, (row_height - bar_height - time_gap - time_height - row_gap) / 2);
         for (int i = 0; i < segments; ++i)
         {
-            RECT bar{ bar_x + i * (segment_width + gap), top,
-                bar_x + i * (segment_width + gap) + segment_width, top + bar_height };
+            const int cell_x = bar_x + i * (segment_width + gap);
+            RECT bar{ cell_x, top, cell_x + segment_width, top + bar_height };
             HBRUSH brush = CreateSolidBrush(empty);
             FillRect(dc, &bar, brush);
             DeleteObject(brush);
@@ -1015,7 +1059,7 @@ namespace
                 DeleteObject(brush);
             }
         }
-        const int drawn_width = segments * (segment_width + gap) - gap;
+        const int drawn_width = bar_width;
         if (options.show_time_bar && available && reset > 0)
         {
             const double duration = weekly ? 7.0 * 86400 : 5.0 * 3600;
@@ -1153,6 +1197,10 @@ void CCodexUsagePlugin::OnInitialize(ITrafficMonitor* app)
         options.text_style = (std::clamp)(read(L"TextStyle", 0), 0, 1);
         options.show_session = read(L"ShowSession", 1) != 0;
         options.show_weekly = read(L"ShowWeekly", 1) != 0;
+        const int saved_weekly_mode = read(L"WeeklyBarMode", -1);
+        options.weekly_bar_mode = saved_weekly_mode >= 0
+            ? (std::clamp)(saved_weekly_mode, 0, 3)
+            : (read(L"Weekly7Cells", 0) != 0 ? 1 : (read(L"Weekly14Cells", 0) != 0 ? 2 : 0));
         options.show_cards = read(L"ShowCards", 1) != 0;
         options.show_time_bar = read(L"ShowTimeBar", 1) != 0;
         options.rest_schedule = (std::clamp)(read(L"RestSchedule", 0), 0, 3);
@@ -1443,6 +1491,7 @@ namespace
         add(L"TextStyle", options.text_style);
         add(L"ShowSession", options.show_session);
         add(L"ShowWeekly", options.show_weekly);
+        add(L"WeeklyBarMode", options.weekly_bar_mode);
         add(L"ShowCards", options.show_cards);
         add(L"ShowTimeBar", options.show_time_bar);
         add(L"RestSchedule", options.rest_schedule);
@@ -1502,14 +1551,20 @@ namespace
             SetDlgItemTextW(dialog, IDC_AFTERNOON_END, FormatClock(options.afternoon_end).c_str());
             CheckDlgButton(dialog, IDC_SESSION, options.show_session ? BST_CHECKED : BST_UNCHECKED);
             CheckDlgButton(dialog, IDC_WEEKLY, options.show_weekly ? BST_CHECKED : BST_UNCHECKED);
+            combo(IDC_WEEKLY_BAR_MODE, chinese
+                ? std::initializer_list<const wchar_t*>{L"10 格（默认）", L"7 格（每天 1 格）", L"14 格（紧凑）", L"14 格（饱满）"}
+                : std::initializer_list<const wchar_t*>{L"10 cells (default)", L"7 cells (1/day)", L"14 cells (compact)", L"14 cells (full)"}, options.weekly_bar_mode);
             CheckDlgButton(dialog, IDC_CARDS, options.show_cards ? BST_CHECKED : BST_UNCHECKED);
             CheckDlgButton(dialog, IDC_TIME_BAR, options.show_time_bar ? BST_CHECKED : BST_UNCHECKED);
+            EnableWindow(GetDlgItem(dialog, IDC_WEEKLY_BAR_MODE),
+                options.show_weekly && options.bar_style == 0);
             if (chinese)
             {
                 SetWindowTextW(dialog, L"Codex Usage 插件选项");
                 const std::pair<int, const wchar_t*> labels[] = {
                     {IDC_POLL_LABEL, L"刷新频率"}, {IDC_THEME_LABEL, L"主题"}, {IDC_BAR_LABEL, L"额度进度条"},
                     {IDC_TEXT_LABEL, L"文字样式"}, {IDC_SESSION, L"显示 5 小时额度"}, {IDC_WEEKLY, L"显示 7 天额度"},
+                    {IDC_WEEKLY_BAR_LABEL, L"7 天进度条"},
                     {IDC_CARDS, L"显示重置卡片"}, {IDC_TIME_BAR, L"显示时间进度条"},
                     {IDC_SCHEDULE_LABEL, L"每周休息安排"}, {IDC_MORNING_LABEL, L"上午时段"},
                     {IDC_AFTERNOON_LABEL, L"下午时段"}, {IDC_MORNING_TO, L"至"}, {IDC_AFTERNOON_TO, L"至"},
@@ -1531,6 +1586,14 @@ namespace
         }
         if (message == WM_COMMAND)
         {
+            if ((LOWORD(wp) == IDC_WEEKLY && HIWORD(wp) == BN_CLICKED) ||
+                (LOWORD(wp) == IDC_BAR && HIWORD(wp) == CBN_SELCHANGE))
+            {
+                const bool show_weekly = IsDlgButtonChecked(dialog, IDC_WEEKLY) == BST_CHECKED;
+                const int bar_style = static_cast<int>(SendDlgItemMessageW(dialog, IDC_BAR, CB_GETCURSEL, 0, 0));
+                EnableWindow(GetDlgItem(dialog, IDC_WEEKLY_BAR_MODE), show_weekly && bar_style == 0);
+                return TRUE;
+            }
             if (LOWORD(wp) == IDC_TIME_BAR && HIWORD(wp) == BN_CLICKED)
             {
                 const bool enabled = IsDlgButtonChecked(dialog, IDC_TIME_BAR) == BST_CHECKED;
@@ -1549,6 +1612,8 @@ namespace
                 options.text_style = static_cast<int>(SendDlgItemMessageW(dialog, IDC_TEXT, CB_GETCURSEL, 0, 0));
                 options.show_session = IsDlgButtonChecked(dialog, IDC_SESSION) == BST_CHECKED;
                 options.show_weekly = IsDlgButtonChecked(dialog, IDC_WEEKLY) == BST_CHECKED;
+                options.weekly_bar_mode = static_cast<int>(SendDlgItemMessageW(dialog, IDC_WEEKLY_BAR_MODE, CB_GETCURSEL, 0, 0));
+                if (options.weekly_bar_mode < 0 || options.weekly_bar_mode > 3) options.weekly_bar_mode = 0;
                 options.show_cards = IsDlgButtonChecked(dialog, IDC_CARDS) == BST_CHECKED;
                 options.show_time_bar = IsDlgButtonChecked(dialog, IDC_TIME_BAR) == BST_CHECKED;
                 options.rest_schedule = static_cast<int>(SendDlgItemMessageW(dialog, IDC_REST_SCHEDULE, CB_GETCURSEL, 0, 0));
@@ -1641,10 +1706,45 @@ int CCodexUsageItem::GetItemWidthEx(void* hDC) const
     }
     const int cards = options.show_cards ? (std::min)(8, (std::max)(0, snapshot.reset_credits)) : 0;
     const int columns = options.show_session && options.show_weekly ? (cards + 1) / 2 : cards;
+    int bar_width = sc(89);
+    if (options.bar_style == 0)
+    {
+        const int session_gap = options.weekly_bar_mode == 3 ? 3 :
+            (options.weekly_bar_mode == 2 ? 1 : (std::max)(1, sc(1)));
+        const int weekly_gap = options.weekly_bar_mode >= 2 ? 1 : (std::max)(2, session_gap);
+        if (options.weekly_bar_mode >= 2)
+        {
+            for (int candidate = sc(89); candidate <= sc(89) + 1000; ++candidate)
+            {
+                if ((candidate - 9 * session_gap) % 10 == 0 &&
+                    (candidate - 13 * weekly_gap) % 14 == 0)
+                {
+                    bar_width = candidate;
+                    break;
+                }
+            }
+        }
+        else
+        {
+            for (int delta = 0; delta <= 35; ++delta)
+            {
+                for (const int candidate : { sc(89) + delta, sc(89) - delta })
+                {
+                    if (candidate > 0 && (candidate - 9 * session_gap) % 10 == 0 &&
+                        (candidate - 6 * weekly_gap) % 7 == 0)
+                    {
+                        bar_width = candidate;
+                        delta = 36;
+                        break;
+                    }
+                }
+            }
+        }
+    }
     SIZE short_label{}, long_label{};
     GetTextExtentPoint32W(dc, L"5h", 2, &short_label);
     GetTextExtentPoint32W(dc, L"7d", 2, &long_label);
-    return sc(2 + 4 + 89 + 8 + 8 + columns * 16) + (std::max)(short_label.cx, long_label.cx) + summary_width;
+    return sc(2 + 4 + 8 + 8 + columns * 16) + bar_width + (std::max)(short_label.cx, long_label.cx) + summary_width;
 }
 
 void CCodexUsageItem::DrawItem(void* hDC, int x, int y, int w, int h, bool dark_mode)
