@@ -954,14 +954,13 @@ namespace
         int LayoutWidth() const { return (std::max)(session, weekly); }
     };
 
-    QuotaBarWidths CalculateQuotaBarWidths(int base_width, int compact_width, int spacious_width, int weekly_bar_mode,
+    QuotaBarWidths CalculateQuotaBarWidths(int base_width, int compact_width, int weekly_bar_mode,
         int session_gap, int weekly_gap, bool segmented)
     {
         if (!segmented) return { base_width, base_width };
 
         // Compact 14-cell mode starts from a narrower shared width; all rows still end on the same pixel.
-        int shared_width = weekly_bar_mode == 2 ? compact_width :
-            (weekly_bar_mode == 3 ? spacious_width : base_width);
+        int shared_width = weekly_bar_mode == 2 ? compact_width : base_width;
         if (weekly_bar_mode == 2)
         {
             // Equal 10/14-cell bars with 1px gaps recur every 70px; choose the closest scaled width.
@@ -1050,7 +1049,7 @@ namespace
         const int session_gap = options.weekly_bar_mode >= 2 ? 1 : (std::max)(1, sc(1));
         const int weekly_gap = options.weekly_bar_mode <= 1 ? session_gap :
             (options.weekly_bar_mode >= 2 ? 1 : (std::max)(2, session_gap));
-        const auto bar_widths = CalculateQuotaBarWidths(base_bar_width, sc(69), sc(139), options.weekly_bar_mode,
+        const auto bar_widths = CalculateQuotaBarWidths(base_bar_width, sc(69), options.weekly_bar_mode,
             session_gap, weekly_gap, options.bar_style == 0);
         const int bar_width = weekly ? bar_widths.weekly : bar_widths.session;
         const int gap = options.bar_style == 0 ? (weekly ? weekly_gap : session_gap) : 0;
@@ -1862,7 +1861,7 @@ int CCodexUsageItem::GetItemWidthEx(void* hDC) const
     const int session_gap = options.weekly_bar_mode >= 2 ? 1 : (std::max)(1, sc(1));
     const int weekly_gap = options.weekly_bar_mode <= 1 ? session_gap :
         (options.weekly_bar_mode >= 2 ? 1 : (std::max)(2, session_gap));
-    const auto bar_widths = CalculateQuotaBarWidths(sc(89), sc(69), sc(139), options.weekly_bar_mode,
+    const auto bar_widths = CalculateQuotaBarWidths(sc(89), sc(69), options.weekly_bar_mode,
         session_gap, weekly_gap, options.bar_style == 0);
     const int bar_width = bar_widths.LayoutWidth();
     SIZE short_label{}, long_label{};
