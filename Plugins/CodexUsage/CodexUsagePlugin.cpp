@@ -957,7 +957,7 @@ namespace
     QuotaBarWidths CalculateQuotaBarWidths(int base_width, int compact_width, int weekly_bar_mode,
         int session_gap, int weekly_gap, bool segmented)
     {
-        if (!segmented) return { base_width, base_width };
+        if (!segmented || weekly_bar_mode == 0) return { base_width, base_width };
 
         // Compact 14-cell mode starts from a narrower shared width; all rows still end on the same pixel.
         int shared_width = weekly_bar_mode == 2 ? compact_width : base_width;
@@ -1047,8 +1047,8 @@ namespace
         const int bar_x = label.right + sc(4);
         const int base_bar_width = sc(89);
         const int session_gap = options.weekly_bar_mode >= 2 ? 1 : (std::max)(1, sc(1));
-        const int weekly_gap = options.weekly_bar_mode <= 1 ? session_gap :
-            (options.weekly_bar_mode >= 2 ? 1 : (std::max)(2, session_gap));
+        const int weekly_gap = options.weekly_bar_mode == 1 ? (std::max)(2, session_gap) :
+            (options.weekly_bar_mode == 0 ? session_gap : 1);
         const auto bar_widths = CalculateQuotaBarWidths(base_bar_width, sc(69), options.weekly_bar_mode,
             session_gap, weekly_gap, options.bar_style == 0);
         const int bar_width = weekly ? bar_widths.weekly : bar_widths.session;
@@ -1093,7 +1093,7 @@ namespace
                 DeleteObject(brush);
             }
         }
-        const int drawn_width = bar_width;
+        const int drawn_width = segments * (segment_width + gap) - gap;
         if (options.show_time_bar && available && reset > 0)
         {
             const double duration = weekly ? 7.0 * 86400 : 5.0 * 3600;
@@ -1144,7 +1144,7 @@ namespace
             DeleteObject(work_brush);
             DeleteObject(rest_brush);
         }
-        const int value_x = bar_x + bar_widths.LayoutWidth() + sc(8);
+        const int value_x = bar_x + drawn_width + sc(8);
         const std::wstring summary = QuotaSummary(snapshot, weekly);
         SIZE size{}; GetTextExtentPoint32W(dc, summary.c_str(), static_cast<int>(summary.size()), &size);
         RECT summary_rect{ value_x, y, value_x + size.cx + sc(1), y + row_height };
@@ -1713,11 +1713,25 @@ namespace
             for (int id : { IDC_SCHEDULE_LABEL, IDC_REST_SCHEDULE, IDC_MORNING_LABEL, IDC_MORNING_START,
                 IDC_MORNING_TO, IDC_MORNING_END, IDC_AFTERNOON_LABEL, IDC_AFTERNOON_START, IDC_AFTERNOON_TO, IDC_AFTERNOON_END })
                 EnableWindow(GetDlgItem(dialog, id), time_bar_enabled);
-            RECT bounds{}, owner{};
+            RECT bounds{}, work_area{};
             GetWindowRect(dialog, &bounds);
-            GetWindowRect(GetParent(dialog) ? GetParent(dialog) : GetDesktopWindow(), &owner);
-            SetWindowPos(dialog, nullptr, owner.left + (owner.right - owner.left - bounds.right + bounds.left) / 2,
-                owner.top + (owner.bottom - owner.top - bounds.bottom + bounds.top) / 2, 0, 0, SWP_NOSIZE | SWP_NOZORDER);
+            const HWND owner = GetParent(dialog);
+            const HMONITOR monitor = MonitorFromWindow(owner ? owner : dialog, MONITOR_DEFAULTTONEAREST);
+            MONITORINFO monitor_info{ sizeof(monitor_info) };
+            if (monitor && GetMonitorInfoW(monitor, &monitor_info))
+                work_area = monitor_info.rcWork;
+            else if (!SystemParametersInfoW(SPI_GETWORKAREA, 0, &work_area, 0))
+                work_area = RECT{ 0, 0, GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN) };
+
+            const LONG dialog_width = bounds.right - bounds.left;
+            const LONG dialog_height = bounds.bottom - bounds.top;
+            const LONG max_left = (std::max)(work_area.left, work_area.right - dialog_width);
+            const LONG max_top = (std::max)(work_area.top, work_area.bottom - dialog_height);
+            const LONG left = (std::clamp)(work_area.left + (work_area.right - work_area.left - dialog_width) / 2,
+                work_area.left, max_left);
+            const LONG top = (std::clamp)(work_area.top + (work_area.bottom - work_area.top - dialog_height) / 2,
+                work_area.top, max_top);
+            SetWindowPos(dialog, nullptr, left, top, 0, 0, SWP_NOSIZE | SWP_NOZORDER);
             return TRUE;
         }
         if (message == WM_COMMAND)
@@ -1859,14 +1873,16 @@ int CCodexUsageItem::GetItemWidthEx(void* hDC) const
     const int cards = options.show_cards ? (std::min)(8, (std::max)(0, snapshot.reset_credits)) : 0;
     const int columns = options.show_session && options.show_weekly ? (cards + 1) / 2 : cards;
     const int session_gap = options.weekly_bar_mode >= 2 ? 1 : (std::max)(1, sc(1));
-    const int weekly_gap = options.weekly_bar_mode <= 1 ? session_gap :
-        (options.weekly_bar_mode >= 2 ? 1 : (std::max)(2, session_gap));
+    const int weekly_gap = options.weekly_bar_mode == 1 ? (std::max)(2, session_gap) :
+        (options.weekly_bar_mode == 0 ? session_gap : 1);
     const auto bar_widths = CalculateQuotaBarWidths(sc(89), sc(69), options.weekly_bar_mode,
         session_gap, weekly_gap, options.bar_style == 0);
     const int bar_width = bar_widths.LayoutWidth();
     SIZE short_label{}, long_label{};
     GetTextExtentPoint32W(dc, L"5h", 2, &short_label);
     GetTextExtentPoint32W(dc, L"7d", 2, &long_label);
+    if (options.weekly_bar_mode == 0)
+        return sc(2 + 4 + 89 + 8 + 8 + columns * 16) + (std::max)(short_label.cx, long_label.cx) + summary_width;
     return sc(2 + 4 + 8 + 8 + columns * 16) + bar_width + (std::max)(short_label.cx, long_label.cx) + summary_width;
 }
 
