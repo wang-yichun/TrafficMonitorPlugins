@@ -19,7 +19,7 @@ struct CodexOptions
     int text_style{}; // Compact, detailed
     bool show_session{true};
     bool show_weekly{true};
-    int weekly_bar_mode{}; // 10 cells, 7 cells, 14 compact, 14 full
+    int weekly_bar_mode{}; // 10 cells, 7 cells, 14 compact, 14 spacious
     bool show_cards{true};
     bool show_time_bar{true};
     bool show_expiry_warning{};

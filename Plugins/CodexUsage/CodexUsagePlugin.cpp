@@ -946,6 +946,76 @@ namespace
         Gdiplus::Rect source{};
     };
 
+    struct QuotaBarWidths
+    {
+        int session{};
+        int weekly{};
+
+        int LayoutWidth() const { return (std::max)(session, weekly); }
+    };
+
+    QuotaBarWidths CalculateQuotaBarWidths(int base_width, int compact_width, int spacious_width, int weekly_bar_mode,
+        int session_gap, int weekly_gap, bool segmented)
+    {
+        if (!segmented) return { base_width, base_width };
+
+        // Compact 14-cell mode starts from a narrower shared width; all rows still end on the same pixel.
+        int shared_width = weekly_bar_mode == 2 ? compact_width :
+            (weekly_bar_mode == 3 ? spacious_width : base_width);
+        if (weekly_bar_mode == 2)
+        {
+            // Equal 10/14-cell bars with 1px gaps recur every 70px; choose the closest scaled width.
+            for (int delta = 0; delta <= 35; ++delta)
+            {
+                const int candidates[] = { compact_width + delta, compact_width - delta };
+                bool found = false;
+                for (const int candidate : candidates)
+                {
+                    if (candidate > 0 &&
+                        (candidate - 9 * session_gap) % 10 == 0 &&
+                        (candidate - 13 * weekly_gap) % 14 == 0)
+                    {
+                        shared_width = candidate;
+                        found = true;
+                        break;
+                    }
+                }
+                if (found) break;
+            }
+        }
+        else if (weekly_bar_mode >= 2)
+        {
+            for (int candidate = shared_width; candidate <= shared_width + 1000; ++candidate)
+            {
+                if ((candidate - 9 * session_gap) % 10 == 0 &&
+                    (candidate - 13 * weekly_gap) % 14 == 0)
+                {
+                    shared_width = candidate;
+                    break;
+                }
+            }
+        }
+        else
+        {
+            for (int delta = 0; delta <= 35; ++delta)
+            {
+                const int candidates[] = { base_width + delta, base_width - delta };
+                for (const int candidate : candidates)
+                {
+                    if (candidate > 0 &&
+                        (candidate - 9 * session_gap) % 10 == 0 &&
+                        (candidate - 6 * weekly_gap) % 7 == 0)
+                    {
+                        shared_width = candidate;
+                        delta = 36;
+                        break;
+                    }
+                }
+            }
+        }
+        return { shared_width, shared_width };
+    }
+
     void DrawRow(HDC dc, const CodexSnapshot& snapshot, bool weekly, int x, int y, int w, int h, bool dark)
     {
         const auto options = CCodexUsagePlugin::Instance().Options();
@@ -976,48 +1046,13 @@ namespace
         if (!snapshot.remote_unavailable) DrawText(dc, label, weekly ? L"7d" : L"5h", foreground, DT_RIGHT);
 
         const int bar_x = label.right + sc(4);
-        int bar_width = sc(89);
-        const int session_gap = options.weekly_bar_mode == 3 ? 3 :
-            (options.weekly_bar_mode == 2 ? 1 : (std::max)(1, sc(1)));
-        const int weekly_gap = options.weekly_bar_mode >= 2 ? 1 : (std::max)(2, session_gap);
-        if (options.bar_style == 0)
-        {
-            // Find a shared physical-pixel width that divides evenly into both rows.
-            // The compact and full 14-cell modes use fixed integer-pixel gaps.
-            if (options.weekly_bar_mode >= 2)
-            {
-                const int weekly_cells = 14;
-                for (int candidate = sc(89); candidate <= sc(89) + 1000; ++candidate)
-                {
-                    if ((candidate - 9 * session_gap) % 10 == 0 &&
-                        (candidate - (weekly_cells - 1) * weekly_gap) % weekly_cells == 0)
-                    {
-                        bar_width = candidate;
-                        break;
-                    }
-                }
-            }
-            else
-            {
-                // Keep the existing 10/7-cell layout aligned with identical gaps.
-                for (int delta = 0; delta <= 35; ++delta)
-                {
-                    const int candidates[] = { sc(89) + delta, sc(89) - delta };
-                    bool found = false;
-                    for (const int candidate : candidates)
-                    {
-                        if (candidate <= 0 ||
-                            (candidate - 9 * session_gap) % 10 != 0 ||
-                            (candidate - 6 * weekly_gap) % 7 != 0)
-                            continue;
-                        bar_width = candidate;
-                        found = true;
-                        break;
-                    }
-                    if (found) break;
-                }
-            }
-        }
+        const int base_bar_width = sc(89);
+        const int session_gap = options.weekly_bar_mode >= 2 ? 1 : (std::max)(1, sc(1));
+        const int weekly_gap = options.weekly_bar_mode <= 1 ? session_gap :
+            (options.weekly_bar_mode >= 2 ? 1 : (std::max)(2, session_gap));
+        const auto bar_widths = CalculateQuotaBarWidths(base_bar_width, sc(69), sc(139), options.weekly_bar_mode,
+            session_gap, weekly_gap, options.bar_style == 0);
+        const int bar_width = weekly ? bar_widths.weekly : bar_widths.session;
         const int gap = options.bar_style == 0 ? (weekly ? weekly_gap : session_gap) : 0;
         const int segments = options.bar_style == 0
             ? (weekly ? (options.weekly_bar_mode == 1 ? 7 : options.weekly_bar_mode >= 2 ? 14 : 10) : 10)
@@ -1110,7 +1145,7 @@ namespace
             DeleteObject(work_brush);
             DeleteObject(rest_brush);
         }
-        const int value_x = bar_x + drawn_width + sc(8);
+        const int value_x = bar_x + bar_widths.LayoutWidth() + sc(8);
         const std::wstring summary = QuotaSummary(snapshot, weekly);
         SIZE size{}; GetTextExtentPoint32W(dc, summary.c_str(), static_cast<int>(summary.size()), &size);
         RECT summary_rect{ value_x, y, value_x + size.cx + sc(1), y + row_height };
@@ -1650,8 +1685,8 @@ namespace
             CheckDlgButton(dialog, IDC_SESSION, options.show_session ? BST_CHECKED : BST_UNCHECKED);
             CheckDlgButton(dialog, IDC_WEEKLY, options.show_weekly ? BST_CHECKED : BST_UNCHECKED);
             combo(IDC_WEEKLY_BAR_MODE, chinese
-                ? std::initializer_list<const wchar_t*>{L"10 格（默认）", L"7 格（每天 1 格）", L"14 格（紧凑）", L"14 格（饱满）"}
-                : std::initializer_list<const wchar_t*>{L"10 cells (default)", L"7 cells (1/day)", L"14 cells (compact)", L"14 cells (full)"}, options.weekly_bar_mode);
+                ? std::initializer_list<const wchar_t*>{L"10 格（默认）", L"7 格（每天 1 格）", L"14 格（紧凑）", L"14 格（宽松）"}
+                : std::initializer_list<const wchar_t*>{L"10 cells (default)", L"7 cells (1/day)", L"14 cells (compact)", L"14 cells (spacious)"}, options.weekly_bar_mode);
             CheckDlgButton(dialog, IDC_CARDS, options.show_cards ? BST_CHECKED : BST_UNCHECKED);
             CheckDlgButton(dialog, IDC_TIME_BAR, options.show_time_bar ? BST_CHECKED : BST_UNCHECKED);
             CheckDlgButton(dialog, IDC_EXPIRY_WARNING, options.show_expiry_warning ? BST_CHECKED : BST_UNCHECKED);
@@ -1824,41 +1859,12 @@ int CCodexUsageItem::GetItemWidthEx(void* hDC) const
     }
     const int cards = options.show_cards ? (std::min)(8, (std::max)(0, snapshot.reset_credits)) : 0;
     const int columns = options.show_session && options.show_weekly ? (cards + 1) / 2 : cards;
-    int bar_width = sc(89);
-    if (options.bar_style == 0)
-    {
-        const int session_gap = options.weekly_bar_mode == 3 ? 3 :
-            (options.weekly_bar_mode == 2 ? 1 : (std::max)(1, sc(1)));
-        const int weekly_gap = options.weekly_bar_mode >= 2 ? 1 : (std::max)(2, session_gap);
-        if (options.weekly_bar_mode >= 2)
-        {
-            for (int candidate = sc(89); candidate <= sc(89) + 1000; ++candidate)
-            {
-                if ((candidate - 9 * session_gap) % 10 == 0 &&
-                    (candidate - 13 * weekly_gap) % 14 == 0)
-                {
-                    bar_width = candidate;
-                    break;
-                }
-            }
-        }
-        else
-        {
-            for (int delta = 0; delta <= 35; ++delta)
-            {
-                for (const int candidate : { sc(89) + delta, sc(89) - delta })
-                {
-                    if (candidate > 0 && (candidate - 9 * session_gap) % 10 == 0 &&
-                        (candidate - 6 * weekly_gap) % 7 == 0)
-                    {
-                        bar_width = candidate;
-                        delta = 36;
-                        break;
-                    }
-                }
-            }
-        }
-    }
+    const int session_gap = options.weekly_bar_mode >= 2 ? 1 : (std::max)(1, sc(1));
+    const int weekly_gap = options.weekly_bar_mode <= 1 ? session_gap :
+        (options.weekly_bar_mode >= 2 ? 1 : (std::max)(2, session_gap));
+    const auto bar_widths = CalculateQuotaBarWidths(sc(89), sc(69), sc(139), options.weekly_bar_mode,
+        session_gap, weekly_gap, options.bar_style == 0);
+    const int bar_width = bar_widths.LayoutWidth();
     SIZE short_label{}, long_label{};
     GetTextExtentPoint32W(dc, L"5h", 2, &short_label);
     GetTextExtentPoint32W(dc, L"7d", 2, &long_label);
