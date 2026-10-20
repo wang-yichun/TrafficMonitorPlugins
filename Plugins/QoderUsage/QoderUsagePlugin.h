@@ -65,6 +65,11 @@ struct QoderOptions
     bool show_total{ true };
     bool show_cycle{ true };
     bool language_cn{};              // false = follow host, true = force chinese
+    int rest_schedule{};              // 0: Sat/Sun off, 1: Sun off, 2/3: alternating ISO weeks
+    int morning_start{ 9 * 60 + 30 };
+    int morning_end{ 12 * 60 };
+    int afternoon_start{ 13 * 60 + 30 };
+    int afternoon_end{ 18 * 60 + 30 };
 };
 
 class CQoderUsageItem : public IPluginItem
