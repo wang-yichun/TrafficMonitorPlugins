@@ -38,19 +38,23 @@ namespace CodexTimeBar
         return false;
     }
 
-    inline bool IsWorkingTime(long long timestamp, bool weekly, const CodexCalendar::Calendar& calendar, const Schedule& schedule = {})
+    inline bool IsWorkingTime(long long timestamp, bool weekly, const CodexCalendar::Calendar& calendar,
+        const Schedule& schedule = {}, bool weekly_work_hours_only = false)
     {
         const long long beijing = timestamp + 8 * 3600;
         const long long day = beijing / 86400;
         if (!IsScheduledWorkday(day, calendar, schedule.rest_schedule)) return false;
-        if (weekly) return true;
+        if (weekly && !weekly_work_hours_only) return true;
         const long long seconds = beijing % 86400;
+        if (weekly)
+            return seconds >= schedule.morning_start * 60 && seconds < schedule.afternoon_end * 60;
         return (seconds >= schedule.morning_start * 60 && seconds < schedule.morning_end * 60) ||
             (seconds >= schedule.afternoon_start * 60 && seconds < schedule.afternoon_end * 60);
     }
 
     inline std::vector<int> MarkerPixels(long long now, long long reset, bool weekly, int width,
-        const CodexCalendar::Calendar& calendar = {}, long long custom_duration = 0, const Schedule& schedule = {})
+        const CodexCalendar::Calendar& calendar = {}, long long custom_duration = 0, const Schedule& schedule = {},
+        bool weekly_work_hours_only = false)
     {
         std::vector<int> pixels;
         if (width <= 0 || reset <= now) return pixels;
@@ -72,7 +76,13 @@ namespace CodexTimeBar
             const long long midnight = day * day_seconds - beijing_offset;
             if (weekly)
             {
-                if (IsScheduledWorkday(day, calendar, schedule.rest_schedule) != IsScheduledWorkday(day - 1, calendar, schedule.rest_schedule)) add(midnight);
+                const bool workday = IsScheduledWorkday(day, calendar, schedule.rest_schedule);
+                if (workday != IsScheduledWorkday(day - 1, calendar, schedule.rest_schedule)) add(midnight);
+                if (weekly_work_hours_only && workday)
+                {
+                    add(midnight + schedule.morning_start * 60);
+                    add(midnight + schedule.afternoon_end * 60);
+                }
             }
             else if (IsScheduledWorkday(day, calendar, schedule.rest_schedule))
             {

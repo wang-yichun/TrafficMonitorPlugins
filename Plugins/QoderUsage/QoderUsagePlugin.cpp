@@ -1,6 +1,7 @@
 #include <windows.h>
 #include <winhttp.h>
 #include <shellapi.h>
+#include <commdlg.h>
 
 #include "QoderUsagePlugin.h"
 #include "QoderDesktopAuth.h"
@@ -11,6 +12,7 @@
 #include "PluginAppButton.h"
 #pragma comment(lib, "comctl32.lib")
 #pragma comment(lib, "shell32.lib")
+#pragma comment(lib, "comdlg32.lib")
 
 #include <algorithm>
 #include <cmath>
@@ -92,8 +94,17 @@ namespace
 
     std::wstring ApplicationPath(QuotaProvider provider)
     {
-        return IsWorkBuddy(provider) ? WorkBuddyUsage::ExecutablePath(BuddyEdition(provider))
-            : QoderDesktopAuth::ExecutablePath(QoderEdition(provider));
+        const QoderOptions options = CQoderUsagePlugin::Instance().Options();
+        if (IsWorkBuddy(provider))
+        {
+            const std::wstring& configured_path = provider == QuotaProvider::WorkBuddyInternational
+                ? options.workbuddy_executable_path : options.workbuddy_cn_executable_path;
+            return WorkBuddyUsage::ExecutablePath(BuddyEdition(provider), configured_path);
+        }
+
+        const std::wstring& configured_path = provider == QuotaProvider::QoderChina
+            ? options.qoder_cn_executable_path : options.qoder_executable_path;
+        return QoderDesktopAuth::ExecutablePath(QoderEdition(provider), configured_path);
     }
 
     // ---------- helpers ----------
@@ -921,6 +932,14 @@ namespace
         add(L"MorningEnd", options.morning_end);
         add(L"AfternoonStart", options.afternoon_start);
         add(L"AfternoonEnd", options.afternoon_end);
+        const auto add_string = [&](const wchar_t* key, const std::wstring& value) {
+            section += std::wstring(key) + L"=" + value;
+            section.push_back(L'\0');
+        };
+        add_string(L"QoderExecutablePath", options.qoder_executable_path);
+        add_string(L"QoderCNExecutablePath", options.qoder_cn_executable_path);
+        add_string(L"WorkBuddyExecutablePath", options.workbuddy_executable_path);
+        add_string(L"WorkBuddyCNExecutablePath", options.workbuddy_cn_executable_path);
         section.push_back(L'\0');
         return section;
     }
@@ -949,13 +968,29 @@ namespace
                 cn ? std::initializer_list<const wchar_t*>{ L"关", L"50%", L"25%", L"10%" }
                    : std::initializer_list<const wchar_t*>{ L"Off", L"50%", L"25%", L"10%" },
                 options.alert_threshold);
+            SetDlgItemTextW(dialog, IDC_QODER_PATH, options.qoder_executable_path.c_str());
+            SetDlgItemTextW(dialog, IDC_QODER_CN_PATH, options.qoder_cn_executable_path.c_str());
+            SetDlgItemTextW(dialog, IDC_WORKBUDDY_PATH, options.workbuddy_executable_path.c_str());
+            SetDlgItemTextW(dialog, IDC_WORKBUDDY_CN_PATH, options.workbuddy_cn_executable_path.c_str());
 
             if (cn)
             {
                 const std::pair<int, const wchar_t*> labels[] = {
                     { IDC_QODER_POLL_LABEL, L"刷新频率" },
                     { IDC_QODER_ALERT_LABEL, L"低额度预警" },
-                    { IDC_QODER_HINT, L"任务栏右键 → 显示设置：从 Qoder、QoderCN、WorkBuddy、WorkBuddyCN 中勾选两项。\r\n关闭“水平排列”后，两项上下显示。进度条表示剩余额度，填色随剩余比例显示浅绿、浅黄、浅红。" },
+                    { IDC_QODER_PATH_LABEL, L"国际版程序" },
+                    { IDC_QODER_CN_PATH_LABEL, L"国内版程序" },
+                    { IDC_QODER_PATH_BROWSE, L"浏览..." },
+                    { IDC_QODER_CN_PATH_BROWSE, L"浏览..." },
+                    { IDC_QODER_PATH_DEFAULT, L"默认" },
+                    { IDC_QODER_CN_PATH_DEFAULT, L"默认" },
+                    { IDC_WORKBUDDY_PATH_LABEL, L"WorkBuddy 国际版" },
+                    { IDC_WORKBUDDY_CN_PATH_LABEL, L"WorkBuddy 国内版" },
+                    { IDC_WORKBUDDY_PATH_BROWSE, L"浏览..." },
+                    { IDC_WORKBUDDY_CN_PATH_BROWSE, L"浏览..." },
+                    { IDC_WORKBUDDY_PATH_DEFAULT, L"默认" },
+                    { IDC_WORKBUDDY_CN_PATH_DEFAULT, L"默认" },
+                    { IDC_QODER_HINT, L"四项路径均可留空使用默认位置；自定义安装请浏览选择对应版本的 .exe 文件。任务栏显示项在右键 → 显示设置中选择。" },
                     { IDOK, L"确定" }, { IDCANCEL, L"取消" },
                 };
                 for (const auto& label : labels) SetDlgItemTextW(dialog, label.first, label.second);
@@ -984,10 +1019,91 @@ namespace
         }
         if (message == WM_COMMAND)
         {
+            const int command = LOWORD(wp);
+            if (HIWORD(wp) == BN_CLICKED &&
+                (command == IDC_QODER_PATH_BROWSE || command == IDC_QODER_CN_PATH_BROWSE ||
+                    command == IDC_QODER_PATH_DEFAULT || command == IDC_QODER_CN_PATH_DEFAULT ||
+                    command == IDC_WORKBUDDY_PATH_BROWSE || command == IDC_WORKBUDDY_CN_PATH_BROWSE ||
+                    command == IDC_WORKBUDDY_PATH_DEFAULT || command == IDC_WORKBUDDY_CN_PATH_DEFAULT))
+            {
+                const bool workbuddy_path = command == IDC_WORKBUDDY_PATH_BROWSE || command == IDC_WORKBUDDY_CN_PATH_BROWSE ||
+                    command == IDC_WORKBUDDY_PATH_DEFAULT || command == IDC_WORKBUDDY_CN_PATH_DEFAULT;
+                const bool china_path = command == IDC_QODER_CN_PATH_BROWSE || command == IDC_QODER_CN_PATH_DEFAULT ||
+                    command == IDC_WORKBUDDY_CN_PATH_BROWSE || command == IDC_WORKBUDDY_CN_PATH_DEFAULT;
+                const int edit_id = workbuddy_path
+                    ? (china_path ? IDC_WORKBUDDY_CN_PATH : IDC_WORKBUDDY_PATH)
+                    : (china_path ? IDC_QODER_CN_PATH : IDC_QODER_PATH);
+                const bool reset_default = command == IDC_QODER_PATH_DEFAULT || command == IDC_QODER_CN_PATH_DEFAULT ||
+                    command == IDC_WORKBUDDY_PATH_DEFAULT || command == IDC_WORKBUDDY_CN_PATH_DEFAULT;
+                if (reset_default)
+                {
+                    SetDlgItemTextW(dialog, edit_id, L"");
+                    return TRUE;
+                }
+
+                std::vector<wchar_t> selected(32768, L'\0');
+                GetDlgItemTextW(dialog, edit_id, selected.data(), static_cast<int>(selected.size()));
+                if (selected.front() == L'\0')
+                {
+                    const auto default_path = workbuddy_path
+                        ? WorkBuddyUsage::ExecutablePath(china_path ? WorkBuddyUsage::Edition::China : WorkBuddyUsage::Edition::International)
+                        : QoderDesktopAuth::ExecutablePath(china_path
+                            ? QoderDesktopAuth::Edition::China : QoderDesktopAuth::Edition::International);
+                    if (default_path.size() < selected.size())
+                        std::copy(default_path.begin(), default_path.end(), selected.begin());
+                }
+
+                static const wchar_t filter[] = L"Executable files (*.exe)\0*.exe\0All files (*.*)\0*.*\0\0";
+                OPENFILENAMEW file_dialog{};
+                file_dialog.lStructSize = sizeof(file_dialog);
+                file_dialog.hwndOwner = dialog;
+                file_dialog.lpstrFilter = filter;
+                file_dialog.lpstrFile = selected.data();
+                file_dialog.nMaxFile = static_cast<DWORD>(selected.size());
+                file_dialog.lpstrTitle = cn
+                    ? (workbuddy_path
+                        ? (china_path ? L"请选择 WorkBuddy 国内版程序" : L"请选择 WorkBuddy 国际版程序")
+                        : (china_path ? L"请选择 Qoder CN 程序" : L"请选择 Qoder 国际版程序"))
+                    : (workbuddy_path
+                        ? (china_path ? L"Select WorkBuddy CN executable" : L"Select WorkBuddy executable")
+                        : (china_path ? L"Select Qoder CN executable" : L"Select Qoder executable"));
+                file_dialog.Flags = OFN_EXPLORER | OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST |
+                    OFN_NOCHANGEDIR | OFN_HIDEREADONLY;
+                if (GetOpenFileNameW(&file_dialog))
+                    SetDlgItemTextW(dialog, edit_id, selected.data());
+                return TRUE;
+            }
             if (LOWORD(wp) == IDCANCEL) { EndDialog(dialog, IDCANCEL); return TRUE; }
             if (LOWORD(wp) == IDOK)
             {
                 QoderOptions options = CQoderUsagePlugin::Instance().Options();
+                std::vector<wchar_t> qoder_path(32768, L'\0');
+                std::vector<wchar_t> qoder_cn_path(32768, L'\0');
+                GetDlgItemTextW(dialog, IDC_QODER_PATH, qoder_path.data(), static_cast<int>(qoder_path.size()));
+                GetDlgItemTextW(dialog, IDC_QODER_CN_PATH, qoder_cn_path.data(), static_cast<int>(qoder_cn_path.size()));
+                options.qoder_executable_path = qoder_path.data();
+                options.qoder_cn_executable_path = qoder_cn_path.data();
+                std::vector<wchar_t> workbuddy_path(32768, L'\0');
+                std::vector<wchar_t> workbuddy_cn_path(32768, L'\0');
+                GetDlgItemTextW(dialog, IDC_WORKBUDDY_PATH, workbuddy_path.data(), static_cast<int>(workbuddy_path.size()));
+                GetDlgItemTextW(dialog, IDC_WORKBUDDY_CN_PATH, workbuddy_cn_path.data(), static_cast<int>(workbuddy_cn_path.size()));
+                options.workbuddy_executable_path = workbuddy_path.data();
+                options.workbuddy_cn_executable_path = workbuddy_cn_path.data();
+                const auto valid_executable = [](const std::wstring& path) {
+                    if (path.empty()) return true;
+                    const std::wstring extension = std::filesystem::path(path).extension().wstring();
+                    std::error_code error;
+                    return CompareStringOrdinal(extension.c_str(), -1, L".exe", -1, TRUE) == CSTR_EQUAL &&
+                        std::filesystem::is_regular_file(path, error);
+                };
+                if (!valid_executable(options.qoder_executable_path) || !valid_executable(options.qoder_cn_executable_path) ||
+                    !valid_executable(options.workbuddy_executable_path) || !valid_executable(options.workbuddy_cn_executable_path))
+                {
+                    MessageBoxW(dialog, cn ? L"请选择有效的 .exe 程序文件，或清空路径使用默认位置。"
+                        : L"Select a valid .exe file, or clear the path to use the default location.",
+                        L"Qoder Usage", MB_OK | MB_ICONWARNING);
+                    return TRUE;
+                }
                 const int intervals[] = { 60, 300, 900, 3600 };
                 options.poll_seconds = intervals[(std::clamp)(
                     static_cast<int>(SendDlgItemMessageW(dialog, IDC_QODER_POLL, CB_GETCURSEL, 0, 0)), 0, 3)];
@@ -1083,7 +1199,10 @@ void CQoderUsagePlugin::PollLoop()
             if (m_stop.load()) break;
             QoderSnapshot workbuddy;
             workbuddy.calendar = Snapshot().calendar;
-            WorkBuddyUsage::Refresh(workbuddy, IsChinese(), BuddyEdition(provider));
+            const QoderOptions options = Options();
+            const std::wstring& configured_path = provider == QuotaProvider::WorkBuddyInternational
+                ? options.workbuddy_executable_path : options.workbuddy_cn_executable_path;
+            WorkBuddyUsage::Refresh(workbuddy, IsChinese(), BuddyEdition(provider), configured_path);
             workbuddy.fetched_at = Now();
             PublishSnapshot(std::move(workbuddy), provider);
         }
@@ -1215,6 +1334,16 @@ void CQoderUsagePlugin::LoadConfig()
     options.morning_end = read(L"MorningEnd", 12 * 60);
     options.afternoon_start = read(L"AfternoonStart", 13 * 60 + 30);
     options.afternoon_end = read(L"AfternoonEnd", 18 * 60 + 30);
+    const auto read_string = [&](const wchar_t* key) {
+        std::vector<wchar_t> value(32768, L'\0');
+        GetPrivateProfileStringW(L"Options", key, L"", value.data(),
+            static_cast<DWORD>(value.size()), m_config_path.c_str());
+        return std::wstring(value.data());
+    };
+    options.qoder_executable_path = read_string(L"QoderExecutablePath");
+    options.qoder_cn_executable_path = read_string(L"QoderCNExecutablePath");
+    options.workbuddy_executable_path = read_string(L"WorkBuddyExecutablePath");
+    options.workbuddy_cn_executable_path = read_string(L"WorkBuddyCNExecutablePath");
     const auto valid_minute = [](int minute) { return minute >= 0 && minute < 24 * 60; };
     if (!valid_minute(options.morning_start) || !valid_minute(options.morning_end) ||
         !valid_minute(options.afternoon_start) || !valid_minute(options.afternoon_end) ||

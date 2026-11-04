@@ -1135,7 +1135,8 @@ namespace
             HBRUSH rest_brush = CreateSolidBrush(dark ? RGB(110, 118, 130) : RGB(151, 160, 174));
             const CodexTimeBar::Schedule schedule{ options.rest_schedule, options.morning_start, options.morning_end,
                 options.afternoon_start, options.afternoon_end };
-            const auto markers = CodexTimeBar::MarkerPixels(now, reset, weekly, drawn_width, snapshot.calendar, 0, schedule);
+            const auto markers = CodexTimeBar::MarkerPixels(now, reset, weekly, drawn_width, snapshot.calendar, 0,
+                schedule, options.weekly_work_hours_only);
             const bool expiry_enabled = options.show_expiry_warning && options.expiry_timestamp > 0;
             const COLORREF expiry_work = dark ? RGB(151, 108, 55) : RGB(201, 145, 73);
             const COLORREF expiry_rest = dark ? RGB(168, 139, 66) : RGB(220, 184, 91);
@@ -1159,7 +1160,8 @@ namespace
                 // Match the reverse time direction of the shrinking bar; sample each pixel's center.
                 const long long timestamp = (std::max)(now, reset - static_cast<long long>((pixel + 0.5) * duration / drawn_width));
                 RECT section{ bar_x + pixel, time_bar.top, bar_x + pixel + 1, time_bar.bottom };
-                const bool working_time = CodexTimeBar::IsWorkingTime(timestamp, weekly, snapshot.calendar, schedule);
+                const bool working_time = CodexTimeBar::IsWorkingTime(timestamp, weekly, snapshot.calendar, schedule,
+                    options.weekly_work_hours_only);
                 const bool after_expiry = expiry_enabled && timestamp >= options.expiry_timestamp;
                 const bool after_credit_expiry = credit_expiry_in_cycle && timestamp >= next_credit_expiry;
                 if (after_credit_expiry)
@@ -1331,6 +1333,7 @@ void CCodexUsagePlugin::OnInitialize(ITrafficMonitor* app)
         options.weekly_fill_direction = (std::clamp)(read(L"WeeklyFillDirection", legacy_fill_direction), 0, 1);
         options.show_cards = read(L"ShowCards", 1) != 0;
         options.show_time_bar = read(L"ShowTimeBar", 1) != 0;
+        options.weekly_work_hours_only = read(L"WeeklyWorkHoursOnly", 0) != 0;
         options.show_expiry_warning = read(L"ShowExpiryWarning", 0) != 0;
         wchar_t expiry_value[64]{};
         GetPrivateProfileStringW(L"Options", L"ExpiryTimestamp", L"0", expiry_value,
@@ -1640,6 +1643,7 @@ namespace
         add(L"WeeklyFillDirection", options.weekly_fill_direction);
         add(L"ShowCards", options.show_cards);
         add(L"ShowTimeBar", options.show_time_bar);
+        add(L"WeeklyWorkHoursOnly", options.weekly_work_hours_only);
         add(L"ShowExpiryWarning", options.show_expiry_warning);
         section += L"ExpiryTimestamp=" + std::to_wstring(options.expiry_timestamp);
         section.push_back(L'\0');
@@ -1763,6 +1767,7 @@ namespace
                 : std::initializer_list<const wchar_t*>{L"Vertical", L"Horizontal (left to right)"}, options.weekly_fill_direction);
             CheckDlgButton(dialog, IDC_CARDS, options.show_cards ? BST_CHECKED : BST_UNCHECKED);
             CheckDlgButton(dialog, IDC_TIME_BAR, options.show_time_bar ? BST_CHECKED : BST_UNCHECKED);
+            CheckDlgButton(dialog, IDC_WEEKLY_WORK_HOURS, options.weekly_work_hours_only ? BST_CHECKED : BST_UNCHECKED);
             CheckDlgButton(dialog, IDC_EXPIRY_WARNING, options.show_expiry_warning ? BST_CHECKED : BST_UNCHECKED);
             EnableWindow(GetDlgItem(dialog, IDC_EXPIRY_WARNING), options.show_time_bar);
             EnableWindow(GetDlgItem(dialog, IDC_EXPIRY_TIME), options.show_time_bar && options.show_expiry_warning);
@@ -1772,6 +1777,7 @@ namespace
                 options.show_session && options.bar_style == 0);
             EnableWindow(GetDlgItem(dialog, IDC_SESSION_FILL_DIRECTION), options.show_session && options.bar_style == 0);
             EnableWindow(GetDlgItem(dialog, IDC_WEEKLY_FILL_DIRECTION), options.show_weekly && options.bar_style == 0);
+            EnableWindow(GetDlgItem(dialog, IDC_WEEKLY_WORK_HOURS), options.show_time_bar && options.show_weekly);
             if (chinese)
             {
                 SetWindowTextW(dialog, L"Codex Usage 插件选项");
@@ -1782,6 +1788,7 @@ namespace
                     {IDC_SESSION_BAR_LABEL, L"5 小时格数"},
                     {IDC_SESSION_FILL_DIRECTION_LABEL, L"5 小时填充方向"},
                     {IDC_WEEKLY_FILL_DIRECTION_LABEL, L"7 天填充方向"},
+                    {IDC_WEEKLY_WORK_HOURS, L"周进度按上班至下班时段着色"},
                     {IDC_CARDS, L"显示重置卡片"}, {IDC_TIME_BAR, L"显示时间进度条"},
                     {IDC_EXPIRY_WARNING, L"启用过期提示"},
                     {IDC_SCHEDULE_LABEL, L"每周休息安排"}, {IDC_MORNING_LABEL, L"上午时段"},
@@ -1828,11 +1835,15 @@ namespace
                 EnableWindow(GetDlgItem(dialog, IDC_SESSION_BAR_MODE), show_session && bar_style == 0);
                 EnableWindow(GetDlgItem(dialog, IDC_SESSION_FILL_DIRECTION), show_session && bar_style == 0);
                 EnableWindow(GetDlgItem(dialog, IDC_WEEKLY_FILL_DIRECTION), show_weekly && bar_style == 0);
+                EnableWindow(GetDlgItem(dialog, IDC_WEEKLY_WORK_HOURS), show_weekly &&
+                    IsDlgButtonChecked(dialog, IDC_TIME_BAR) == BST_CHECKED);
                 return TRUE;
             }
             if (LOWORD(wp) == IDC_TIME_BAR && HIWORD(wp) == BN_CLICKED)
             {
                 const bool enabled = IsDlgButtonChecked(dialog, IDC_TIME_BAR) == BST_CHECKED;
+                EnableWindow(GetDlgItem(dialog, IDC_WEEKLY_WORK_HOURS), enabled &&
+                    IsDlgButtonChecked(dialog, IDC_WEEKLY) == BST_CHECKED);
                 for (int id : { IDC_SCHEDULE_LABEL, IDC_REST_SCHEDULE, IDC_MORNING_LABEL, IDC_MORNING_START,
                     IDC_MORNING_TO, IDC_MORNING_END, IDC_AFTERNOON_LABEL, IDC_AFTERNOON_START, IDC_AFTERNOON_TO, IDC_AFTERNOON_END })
                     EnableWindow(GetDlgItem(dialog, id), enabled);
@@ -1868,6 +1879,7 @@ namespace
                 if (options.weekly_fill_direction < 0 || options.weekly_fill_direction > 1) options.weekly_fill_direction = 0;
                 options.show_cards = IsDlgButtonChecked(dialog, IDC_CARDS) == BST_CHECKED;
                 options.show_time_bar = IsDlgButtonChecked(dialog, IDC_TIME_BAR) == BST_CHECKED;
+                options.weekly_work_hours_only = IsDlgButtonChecked(dialog, IDC_WEEKLY_WORK_HOURS) == BST_CHECKED;
                 options.show_expiry_warning = IsDlgButtonChecked(dialog, IDC_EXPIRY_WARNING) == BST_CHECKED;
                 if (options.show_expiry_warning && !ParseLocalDateTime(dialog, IDC_EXPIRY_TIME, options.expiry_timestamp))
                 {

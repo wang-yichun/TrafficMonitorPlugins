@@ -226,8 +226,14 @@ query().catch(()=>emit({error:'unavailable'}));
     }
 }
 
-std::wstring WorkBuddyUsage::ExecutablePath(Edition edition)
+std::wstring WorkBuddyUsage::ExecutablePath(Edition edition, const std::wstring& configured_path)
 {
+    if (!configured_path.empty())
+    {
+        std::error_code configured_error;
+        return std::filesystem::is_regular_file(configured_path, configured_error) ? configured_path : std::wstring{};
+    }
+
     for (const auto& folder : { Environment(L"ProgramW6432"), Environment(L"ProgramFiles"),
         Environment(L"LOCALAPPDATA") + L"\\Programs" })
     {
@@ -299,14 +305,14 @@ bool WorkBuddyUsage::ParseSummary(const std::wstring& json, QoderSnapshot& snaps
     return true;
 }
 
-void WorkBuddyUsage::Refresh(QoderSnapshot& snapshot, bool chinese, Edition edition)
+void WorkBuddyUsage::Refresh(QoderSnapshot& snapshot, bool chinese, Edition edition, const std::wstring& configured_path)
 {
     const bool international = edition == Edition::International;
     snapshot.region = international ? L"global" : L"cn";
     snapshot.credential_label = international
         ? (chinese ? L"WorkBuddy桌面登录（本机只读）" : L"WorkBuddy desktop sign-in (read-only)")
         : (chinese ? L"WorkBuddyCN桌面登录（本机只读）" : L"WorkBuddyCN desktop sign-in (read-only)");
-    const auto executable = ExecutablePath(edition);
+    const auto executable = ExecutablePath(edition, configured_path);
     if (executable.empty())
     {
         snapshot.status = international

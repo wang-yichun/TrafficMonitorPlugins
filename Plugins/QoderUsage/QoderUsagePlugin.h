@@ -81,6 +81,10 @@ struct QoderOptions
     int morning_end{ 12 * 60 };
     int afternoon_start{ 13 * 60 + 30 };
     int afternoon_end{ 18 * 60 + 30 };
+    std::wstring qoder_executable_path;       // empty = use the default Qoder install path
+    std::wstring qoder_cn_executable_path;    // empty = use the default Qoder CN install path
+    std::wstring workbuddy_executable_path;   // empty = use the default WorkBuddy install path
+    std::wstring workbuddy_cn_executable_path;// empty = use the default WorkBuddy CN install path
 };
 
 class CQoderUsageItem : public IPluginItem

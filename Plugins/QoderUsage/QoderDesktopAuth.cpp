@@ -220,12 +220,18 @@ bool QoderDesktopAuth::LoadDesktopCredential(Credential& credential, Edition edi
     return true;
 }
 
-std::wstring QoderDesktopAuth::ExecutablePath(Edition edition)
+std::wstring QoderDesktopAuth::ExecutablePath(Edition edition, const std::wstring& configured_path)
 {
+    if (!configured_path.empty())
+    {
+        std::error_code configured_error;
+        return std::filesystem::is_regular_file(configured_path, configured_error) ? configured_path : std::wstring{};
+    }
+
+    const bool china = edition == Edition::China;
     wchar_t local[MAX_PATH]{};
     const DWORD size = GetEnvironmentVariableW(L"LOCALAPPDATA", local, MAX_PATH);
     if (!size || size >= MAX_PATH) return {};
-    const bool china = edition == Edition::China;
     const auto path = std::filesystem::path(local) / L"Programs" / (china ? L"Qoder CN" : L"Qoder")
         / (china ? L"Qoder CN.exe" : L"Qoder.exe");
     std::error_code error;

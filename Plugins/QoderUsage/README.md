@@ -55,7 +55,7 @@ Content-Type: application/json
 - [CodexBar WorkBuddy 接入说明](https://github.com/steipete/CodexBar/blob/main/docs/workbuddy.md)：summary 字段、分组重复计数、冻结量、Cookie 与 User-Agent 绑定、可选套餐接口。
 - [zcode-workbuddy-connect](https://github.com/hawchou1995/zcode-workbuddy-connect#workbuddy-56-encrypted-credentials)：利用已安装应用运行时读取加密凭据，密钥仅留内存。
 
-当前支持默认安装位置的 **中国版和国际版个人账号**（`Program Files` 或 `%LOCALAPPDATA%\Programs` 下的对应版本目录）。企业配额和自定义安装位置尚未接入。summary 不提供积分包到期/重置时间，插件不推测。billing 和桌面加密方式属于客户端内部接口，升级后若变化需适配。
+当前支持默认安装位置的 **中国版和国际版个人账号**。在插件选项中，Qoder、Qoder CN、WorkBuddy 和 WorkBuddy CN 的程序路径可以分别留空使用默认位置，也可以浏览选择自定义安装位置的 `.exe` 文件。企业配额尚未接入。summary 不提供积分包到期/重置时间，插件不推测。billing 和桌面加密方式属于客户端内部接口，升级后若变化需适配。
 
 ### 验证记录
 
@@ -119,7 +119,7 @@ QoderQuotaDrawingTests.exe <预览输出目录>
 
 左键点击打开详情，再次点击、Escape、关闭按钮或鼠标离开气泡及原点击位置后隐藏。打开后的 600ms 提供移入宽限期，鼠标停留在原点击位置时保持显示。
 
-详情包含连接状态、区域、凭据来源、刷新时间、套餐、接口百分比、额度周期和各类额度。右上角应用按钮分别启动 `%LOCALAPPDATA%\Programs\Qoder\Qoder.exe` 或 `%LOCALAPPDATA%\Programs\Qoder CN\Qoder CN.exe`，QoderCN 不会打开国际版客户端。应用需安装在此用户安装位置。
+详情包含连接状态、区域、凭据来源、刷新时间、套餐、接口百分比、额度周期和各类额度。右上角应用按钮使用插件选项里对应版本的程序路径；路径留空时自动查找各客户端的默认安装位置。WorkBuddy 的自定义路径同时用于执行额度查询程序。
 
 Qoder 或 Codex 详情可见时，对应宿主窗口的原生提示气泡暂停显示，包括宿主再次请求显示提示的情况；详情关闭后恢复。多个插件同时打开详情时，全部关闭才恢复共享的宿主提示。
 

@@ -25,6 +25,7 @@ struct CodexOptions
     int weekly_fill_direction{}; // Vertical, horizontal left-to-right
     bool show_cards{true};
     bool show_time_bar{true};
+    bool weekly_work_hours_only{};
     bool show_expiry_warning{};
     long long expiry_timestamp{}; // Local date/time converted to Unix seconds.
     int rest_schedule{}; // 0: Sat/Sun off, 1: Sun off, 2/3: alternating ISO weeks
